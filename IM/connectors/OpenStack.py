@@ -15,21 +15,21 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import time
-from IM.connectors.LibCloud import LibCloudCloudConnector
-from libcloud.compute.types import Provider, NodeState
-from libcloud.compute.providers import get_driver
-from libcloud.compute.base import NodeImage, NodeAuthSSHKey
+
 from netaddr import IPNetwork, IPAddress
 from IM.config import Config
 from IM.uriparse import uriparse
 from IM.VirtualMachine import VirtualMachine
+from CloudConnector import CloudConnector
+from novaclient import client
+from novaclient.exceptions import NotFound
 
 from radl.radl import Feature
 
 
-class OpenStackCloudConnector(LibCloudCloudConnector):
+class OpenStackCloudConnector(CloudConnector):
     """
-    Cloud Launcher to OpenStack using LibCloud (Needs version 0.16.0 or higher version)
+    Cloud Launcher to OpenStack using python-novaclient
     """
 
     type = "OpenStack"
@@ -37,18 +37,33 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
     DEFAULT_USER = 'cloudadm'
     """ default user to SSH access the VM """
 
+    VM_STATE_MAP = {
+        'BUILDING': VirtualMachine.PENDING,
+        'ACTIVE': VirtualMachine.RUNNING,
+        'DELETED': VirtualMachine.OFF,
+        'SOFT_DELETED': VirtualMachine.OFF,
+        'ERROR': VirtualMachine.FAILED,
+        'STOPPED': VirtualMachine.STOPPED,
+        'SUSPENDED': VirtualMachine.STOPPED,
+        'PAUSED': VirtualMachine.STOPPED,
+        'RESIZED': VirtualMachine.STOPPED,
+        'RESCUED': VirtualMachine.STOPPED,
+        'SHELVED': VirtualMachine.STOPPED
+    }
+
     def __init__(self, cloud_info):
         self.auth = None
-        LibCloudCloudConnector.__init__(self, cloud_info)
+        self.client = None
+        CloudConnector.__init__(self, cloud_info)
 
-    def get_driver(self, auth_data):
+    def get_client(self, auth_data):
         """
-        Get the driver from the auth data
+        Get the OST client from the auth data
 
         Arguments:
                 - auth(Authentication): parsed authentication tokens.
 
-        Returns: a :py:class:`libcloud.compute.base.NodeDriver` or None in case of error
+        Returns: a :py:class:`novaclient.client.Client` or None in case of error
         """
         auths = auth_data.getAuthInfo(self.type, self.cloud.server)
         if not auths:
@@ -56,8 +71,8 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         else:
             auth = auths[0]
 
-        if self.driver and self.auth.compare(auth_data, self.type):
-            return self.driver
+        if self.client and self.auth.compare(auth_data, self.type):
+            return self.client
         else:
             self.auth = auth_data
 
@@ -66,8 +81,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 protocol = "http"
 
             if 'username' in auth and 'password' in auth and 'tenant' in auth:
-                parameters = {"auth_version": '2.0_password',
-                              "auth_url": protocol + "://" + self.cloud.server + ":" + str(self.cloud.port),
+                parameters = {"auth_url": protocol + "://" + self.cloud.server + ":" + str(self.cloud.port) + "/v2.0",
                               "auth_token": None,
                               "service_type": None,
                               "service_name": None,
@@ -84,32 +98,56 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 raise Exception(
                     "No correct auth data has been specified to OpenStack: username, password and tenant")
 
-            # To avoid errors with host certificates
-            # if you want to do it in a more secure way check this:
-            # http://libcloud.readthedocs.org/en/latest/other/ssl-certificate-validation.html
-            import libcloud.security
-            libcloud.security.VERIFY_SSL_CERT = False
+            version = "2.0"
+            nova = client.Client(version,
+                                 username=auth['username'],
+                                 api_key=auth['password'],
+                                 project_id=auth['tenant'],
+                                 auth_url=parameters["auth_url"],
+                                 region_name=parameters["service_region"],
+                                 service_name=parameters["service_name"],
+                                 bypass_url=parameters["base_url"])
 
-            try:
-                import ssl
-                ssl._create_default_https_context = ssl._create_unverified_context
-            except:
-                pass
+            self.client = nova
+            return nova
 
-            cls = get_driver(Provider.OPENSTACK)
-            driver = cls(auth['username'], auth['password'],
-                         ex_tenant_name=auth['tenant'],
-                         ex_domain_name=parameters['domain'],
-                         ex_force_auth_url=parameters["auth_url"],
-                         ex_force_auth_version=parameters["auth_version"],
-                         ex_force_service_region=parameters["service_region"],
-                         ex_force_base_url=parameters["base_url"],
-                         ex_force_service_name=parameters["service_name"],
-                         ex_force_service_type=parameters["service_type"],
-                         ex_force_auth_token=parameters["auth_token"])
+    def get_instance_type(self, flavors, radl):
+        """
+        Get the flavor type to launch to OST
 
-            self.driver = driver
-            return driver
+        Arguments:
+           - size(list of :py:class: `novaclient.flavors.Flavor`): List of sizes on a provider
+           - radl(str): RADL document with the requirements of the VM to get the instance type
+        Returns: a :py:class:`novaclient.flavors.Flavor` with the instance type to launch
+        """
+        instance_type_name = radl.getValue('instance_type')
+
+        memory = 1
+        memory_op = ">="
+        if radl.getFeature('memory.size'):
+            memory = radl.getFeature('memory.size').getValue('M')
+            memory_op = radl.getFeature('memory.size').getLogOperator()
+        cpu = 1
+        cpu_op = ">="
+        if radl.getFeature('cpu.count'):
+            cpu = radl.getValue('cpu.count')
+            cpu_op = radl.getFeature('cpu.count').getLogOperator()
+
+        res = None
+        for flavor in flavors:
+            # get the node size with the lowest price and memory (in the case
+            # of the price is not set)
+            if res is None or (flavor.ram <= res.ram):
+                str_compare = "flavor.ram " + memory_op + " memory"
+                str_compare += " and flavor.vcpus " + cpu_op + " cpu"
+                if eval(str_compare):
+                    if not instance_type_name or flavor.name == instance_type_name:
+                        res = flavor
+
+        if res is None:
+            self.logger.error("No compatible flavor found")
+
+        return res
 
     def concreteSystem(self, radl_system, auth_data):
         image_urls = radl_system.getValue("disk.0.image.url")
@@ -127,13 +165,11 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 src_host = url[1].split(':')[0]
                 # TODO: check the port
                 if protocol == "ost" and self.cloud.server == src_host:
-                    driver = self.get_driver(auth_data)
+                    client = self.get_client(auth_data)
 
                     res_system = radl_system.clone()
-                    instance_type = self.get_instance_type(
-                        driver.list_sizes(), res_system)
-                    self.update_system_info_from_instance(
-                        res_system, instance_type)
+                    instance_type = self.get_instance_type(client.flavors.list(), res_system)
+                    self.update_system_info_from_instance(res_system, instance_type)
 
                     res_system.addFeature(
                         Feature("disk.0.image.url", "=", str_url), conflict="other", missing="other")
@@ -153,75 +189,190 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
 
             return res
 
+    def get_node_with_id(self, node_id, auth_data):
+        """
+        Get the node with the specified ID
+
+        Arguments:
+           - node_id(str): ID of the node to get
+           - auth(Authentication): parsed authentication tokens.
+        Returns: a :py:class:`novaclient.servers.Server` with the node info
+        """
+        client = self.get_client(auth_data)
+        try:
+            node = client.servers.get(node_id)
+        except NotFound:
+            node = None
+
+        return node
+
     def updateVMInfo(self, vm, auth_data):
         node = self.get_node_with_id(vm.id, auth_data)
         if node:
-            if node.state == NodeState.RUNNING or node.state == NodeState.REBOOTING:
-                res_state = VirtualMachine.RUNNING
-            elif node.state == NodeState.PENDING:
-                res_state = VirtualMachine.PENDING
-            elif node.state == NodeState.TERMINATED:
-                res_state = VirtualMachine.OFF
-            elif node.state == NodeState.STOPPED:
-                res_state = VirtualMachine.STOPPED
-            elif node.state == NodeState.ERROR:
-                res_state = VirtualMachine.FAILED
-            else:
-                res_state = VirtualMachine.UNKNOWN
+            vm.state = self.VM_STATE_MAP.get(node.status, VirtualMachine.UNKNOWN)
 
-            vm.state = res_state
+            flavorId = node.flavor['id']
+            client = self.get_client(auth_data)
+            flavor = client.flavors.get(flavorId)
+            self.update_system_info_from_instance(vm.info.systems[0], flavor)
 
-            flavorId = node.extra['flavorId']
-            instance_type = node.driver.ex_get_size(flavorId)
-            self.update_system_info_from_instance(
-                vm.info.systems[0], instance_type)
-
-            self.setIPsFromInstance(vm, node)
-            self.attach_volumes(vm, node)
+            self.setIPsFromInstance(vm, node, auth_data)
+            self.attach_volumes(vm, node, auth_data)
         else:
             vm.state = VirtualMachine.OFF
 
         return (True, vm)
 
-    def setIPsFromInstance(self, vm, node):
+    def wait_volume(self, volume, client, state='available', timeout=60):
+        """
+        Wait a volume (with the state extra parameter) to be in certain state.
+
+        Arguments:
+           - volume(:py:class:`novaclient.volumes.Volume`): volume object or boolean.
+           - state(str): State to wait for (default value 'available').
+           - timeout(int): Max time to wait in seconds (default value 60).
+        """
+        if volume:
+            cont = 0
+            err_states = ["error"]
+            while volume.status != state and volume.status not in err_states and cont < timeout:
+                cont += 2
+                time.sleep(2)
+                volume = client.volumes.get(volume.id)
+            return volume.extra['state'] == state
+        else:
+            return False
+
+    def attach_volumes(self, vm, node, auth_data):
+        """
+        Attach a the required volumes (in the RADL) to the launched node
+
+        Arguments:
+           - vm(:py:class:`IM.VirtualMachine`): VM information.
+           - node(:py:class:`novaclient.servers.Server`): node object.
+        """
+        try:
+            if node.status == 'ACTIVE' and "volumes" not in vm.__dict__.keys():
+                vm.volumes = []
+                cont = 1
+                while (vm.info.systems[0].getValue("disk." + str(cont) + ".size") and
+                        vm.info.systems[0].getValue("disk." + str(cont) + ".device")):
+                    disk_size = vm.info.systems[0].getFeature(
+                        "disk." + str(cont) + ".size").getValue('G')
+                    disk_device = vm.info.systems[0].getValue(
+                        "disk." + str(cont) + ".device")
+                    self.logger.debug(
+                        "Creating a %d GB volume for the disk %d" % (int(disk_size), cont))
+                    volume_name = "im-%d" % int(time.time() * 100.0)
+
+                    client = self.get_client(auth_data)
+                    volume = client.volumes.create(int(disk_size), display_name=volume_name)
+                    success = self.wait_volume(volume, client)
+                    if success:
+                        # Add the volume to the VM to remove it later
+                        vm.volumes.append(volume)
+                        self.logger.debug("Attach the volume ID " + str(volume.id))
+                        client.volumes.create_server_volume(node.id, volume.id, "/dev/" + disk_device)
+                    else:
+                        self.logger.error("Error waiting the volume ID " + str(
+                            volume.id) + " not attaching to the VM and destroying it.")
+                        volume.delete()
+
+                    cont += 1
+            return True
+        except Exception:
+            self.logger.exception(
+                "Error creating or attaching the volume to the node")
+            return False
+
+    def map_radl_ost_networks(self, radl_nets, ost_nets):
+        """
+        Generate a mapping between the RADL networks and the OST networks
+
+        Arguments:
+           - radl_nets(list of :py:class:`radl.network` objects): RADL networks.
+           - ost_nets(a list of tuples (net_name, is_public)): OST networks.
+
+         Returns: a dict with key the RADL network id and value a tuple (ost_net_name, is_public)
+        """
+
+        res = {}
+        for ip, (net_name, is_public) in ost_nets.items():
+            if net_name:
+                for radl_net in radl_nets:
+                    net_provider_id = radl_net.getValue('provider_id')
+                    if net_provider_id:
+                        if net_name == net_provider_id:
+                            res[radl_net.id] = ip
+                            break
+                    else:
+                        if radl_net.id not in res and radl_net.isPublic() == is_public:
+                            res[radl_net.id] = ip
+                            radl_net.setValue('provider_id', net_name)
+                            break
+            else:
+                # It seems to be a floating IP
+                for radl_net in radl_nets:
+                    if radl_net.id not in res and radl_net.isPublic() == is_public:
+                        res[radl_net.id] = ip
+                        break
+
+        return res
+
+    def setIPsFromInstance(self, vm, node, auth_data):
         """
         Adapt the RADL information of the VM to the real IPs assigned by the cloud provider
 
         Arguments:
            - vm(:py:class:`IM.VirtualMachine`): VM information.
-           - node(:py:class:`libcloud.compute.base.Node`): object to connect to EC2 instance.
+           - node(:py:class:`novaclient.servers.Server`): object to connect to OST instance.
         """
 
-        # It seems that sometimes OpenStack does not return correctly the IPs
-        # as public or private
         public_ips = []
-        private_ips = []
-        for ip in node.public_ips + node.private_ips:
-            if any([IPAddress(ip) in IPNetwork(mask) for mask in Config.PRIVATE_NET_MASKS]):
-                private_ips.append(ip)
-            else:
-                public_ips.append(ip)
+        ip_net_map = {}
+        for net_name, ips in node.addresses.items():
+            for ipo in ips:
+                ip = ipo['addr']
+                is_private = any([IPAddress(ip) in IPNetwork(mask) for mask in Config.PRIVATE_NET_MASKS])
+                if ipo['OS-EXT-IPS:type'] == 'floating':
+                    # in this case it always has to be public
+                    ip_net_map[ip] = (None, not is_private)
+                else:
+                    ip_net_map[ip] = (net_name, not is_private)
+                if not is_private:
+                    public_ips.append(ip)
 
-        vm.setIps(public_ips, private_ips)
-        self.manage_elastic_ips(vm, node, public_ips)
+        map_nets = self.map_radl_ost_networks(vm.info.networks, ip_net_map)
 
-    def update_system_info_from_instance(self, system, instance_type):
+        system = vm.info.systems[0]
+        i = 0
+        while system.getValue("net_interface." + str(i) + ".connection"):
+            net_name = system.getValue("net_interface." + str(i) + ".connection")
+            if net_name in map_nets:
+                ip = map_nets[net_name]
+                system.setValue("net_interface." + str(i) + ".ip", ip)
+            i += 1
+
+        self.manage_elastic_ips(vm, node, public_ips, auth_data)
+
+    def update_system_info_from_instance(self, system, flavor):
         """
-        Update the features of the system with the information of the instance_type
+        Update the features of the system with the information of the flavor
         """
-        if instance_type:
-            LibCloudCloudConnector.update_system_info_from_instance(
-                self, system, instance_type)
-            if instance_type.vcpus:
-                system.addFeature(
-                    Feature("cpu.count", "=", instance_type.vcpus), conflict="me", missing="other")
+        if flavor:
+            system.addFeature(Feature("memory.size", "=", flavor.ram, 'M'),
+                              conflict="other", missing="other")
+            system.addFeature(Feature("instance_type", "=", flavor.name),
+                              conflict="other", missing="other")
+            system.addFeature(Feature("cpu.count", "=", flavor.vcpus),
+                              conflict="me", missing="other")
 
-    def get_networks(self, driver, radl):
+    def get_networks(self, client, radl):
         """
         Get the list of networks to connect the VM
         """
         nets = []
-        ost_nets = driver.ex_list_networks()
+        ost_nets = client.networks.list()
         used_nets = []
         # I use this "patch" as used in the LibCloud OpenStack driver
         public_networks_labels = ['public', 'internet', 'publica']
@@ -233,20 +384,20 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 net_provider_id = radl_net.getValue('provider_id')
                 if net_provider_id:
                     for net in ost_nets:
-                        if net.name == net_provider_id:
-                            if net.name not in used_nets:
-                                nets.append(net)
-                                used_nets.append(net.name)
+                        if net.label == net_provider_id:
+                            if net.label not in used_nets:
+                                nets.append({'net-%s' % radl_net.id: net.id})
+                                used_nets.append(net.label)
                             break
                 else:
                     # if not select the first not used net
                     for net in ost_nets:
                         # I use this "patch" as used in the LibCloud OpenStack
                         # driver
-                        if net.name not in public_networks_labels:
-                            if net.name not in used_nets:
-                                nets.append(net)
-                                used_nets.append(net.name)
+                        if net.label not in public_networks_labels:
+                            if net.label not in used_nets:
+                                nets.append({'net-%s' % radl_net.id: net.id})
+                                used_nets.append(net.label)
                                 break
 
         return nets
@@ -268,14 +419,24 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         else:
             return None
 
+    def get_image_id(self, path):
+        """
+        Get the ID of the image to use from the location of the VMI
+
+        Arguments:
+           - path(str): URL with the location of the VMI
+        Returns: a str with the ID
+        """
+        return uriparse(path)[2][1:]
+
     def launch(self, inf, radl, requested_radl, num_vm, auth_data):
-        driver = self.get_driver(auth_data)
+        client = self.get_client(auth_data)
 
         system = radl.systems[0]
         image_id = self.get_image_id(system.getValue("disk.0.image.url"))
-        image = NodeImage(id=image_id, name=None, driver=driver)
+        image = client.images.get(image_id)
 
-        instance_type = self.get_instance_type(driver.list_sizes(), system)
+        instance_type = self.get_instance_type(client.flavors.list(), system)
         if not instance_type:
             raise Exception("No flavor found for the specified VM requirements.")
 
@@ -285,39 +446,38 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         if not name:
             name = "userimage"
 
-        nets = self.get_networks(driver, radl)
+        nets = self.get_networks(client, radl)
 
-        sgs = self.create_security_group(driver, inf, radl)
+        sgs = self.create_security_group(client, inf, radl)
 
-        args = {'size': instance_type,
-                'image': image,
+        args = {'flavor': instance_type.id,
+                'image': image.id,
                 'networks': nets,
-                'ex_security_groups': sgs,
+                'security_groups': sgs,
                 'name': "%s-%s" % (name, int(time.time() * 100))}
 
         keypair = None
         keypair_name = None
         public_key = system.getValue("disk.0.os.credentials.public_key")
         if public_key:
-            keypair = driver.get_key_pair(public_key)
+            try:
+                keypair = client.keypairs.get(public_key)
+            except NotFound:
+                pass
             if keypair:
-                system.setUserKeyCredentials(
-                    system.getCredentials().username, None, keypair.private_key)
+                system.setUserKeyCredentials(system.getCredentials().username, None, keypair.private_key)
             else:
-                if "ssh_key" in driver.features.get("create_node", []):
-                    args["auth"] = NodeAuthSSHKey(public_key)
+                keypair_name = "im-%d" % int(time.time() * 100.0)
+                keypair = client.keypairs.create(keypair_name, public_key)
 
         elif not system.getValue("disk.0.os.credentials.password"):
             keypair_name = "im-%d" % int(time.time() * 100.0)
-            keypair = driver.create_key_pair(keypair_name)
+            keypair = client.keypairs.create(keypair_name)
             public_key = keypair.public_key
-            system.setUserKeyCredentials(
-                system.getCredentials().username, None, keypair.private_key)
+            system.setUserKeyCredentials(system.getCredentials().username, None, keypair.private_key)
 
-            if keypair.public_key and "ssh_key" in driver.features.get("create_node", []):
-                args["auth"] = NodeAuthSSHKey(keypair.public_key)
-            else:
-                args["ex_keyname"] = keypair_name
+        if keypair_name:
+            args['key_name'] = keypair_name
 
         user = system.getValue('disk.0.os.credentials.username')
         if not user:
@@ -329,7 +489,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
             cloud_init = self.gen_cloud_config(public_key, user, cloud_init)
 
         if cloud_init:
-            args['ex_userdata'] = cloud_init
+            args['userdata'] = cloud_init
 
         res = []
         i = 0
@@ -337,7 +497,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         while i < num_vm:
             self.logger.debug("Creating node")
 
-            node = driver.create_node(**args)
+            node = client.servers.create(**args)
 
             if node:
                 vm = VirtualMachine(
@@ -360,37 +520,19 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                     (len(public_key) >= 1 and public_key.find('-----BEGIN CERTIFICATE-----') != -1)):
                 # only delete in case of the user do not specify the keypair
                 # name
-                driver.delete_key_pair(keypair)
+                keypair.delete()
             if sgs:
-                driver.ex_delete_security_group(sgs[0])
+                sgs[0].delete()
 
         return res
 
-    def get_ip_pool(self, driver, pool_name=None):
-        """
-        Return the most suitable IP pool
-        """
-        pools = driver.ex_list_floating_ip_pools()
-
-        if pool_name:
-            for pool in pools:
-                if pool.name == pool_name:
-                    return pool
-        else:
-            # Currently returns the first one
-            # until I see what metric use to select one
-            return pools[0]
-
-        # otherwise return None
-        return None
-
-    def manage_elastic_ips(self, vm, node, public_ips):
+    def manage_elastic_ips(self, vm, node, public_ips, auth_data):
         """
         Manage the elastic IPs
 
         Arguments:
            - vm(:py:class:`IM.VirtualMachine`): VM information.
-           - node(:py:class:`libcloud.compute.base.Node`): node object.
+           - node(:py:class:`novaclient.servers.Server`): node object.
         """
         n = 0
         requested_ips = []
@@ -411,88 +553,68 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 if ip not in public_ips:
                     # It has not been created yet, do it
                     self.logger.debug("Asking for a fixed ip: %s." % ip)
-                    self.add_elastic_ip(vm, node, ip, pool_name)
+                    self.add_elastic_ip(vm, node, ip, pool_name, auth_data)
             else:
                 if num >= len(public_ips):
                     self.logger.debug("Asking for public IP %d and there are %d" % (
                         num + 1, len(public_ips)))
-                    self.add_elastic_ip(vm, node, None, pool_name)
+                    self.add_elastic_ip(vm, node, None, pool_name, auth_data)
 
-    def get_floating_ip(self, driver, pool_name=None):
+    def get_floating_ip(self, pool_name, auth_data):
         """
         Get a floating IP
         """
+        self.logger.debug("Asking for pool name: %s." % pool_name)
+
+        client = self.get_client(auth_data)
         if pool_name:
-            self.logger.debug("Asking for pool name: %s." % pool_name)
-        pool = self.get_ip_pool(driver, pool_name)
-        if pool:
-            # check if there are un-associated but allocated floating IPs
-            ips = pool.list_floating_ips()
-
-            for ip in ips:
-                if not ip.node_id:
-                    return False, ip
-
-            return True, pool.create_floating_ip()
+            try:
+                return client.floating_ips.create(pool_name)
+            except NotFound:
+                self.logger.error("Error adding a Floating IP: No free IP in pool %s." % pool_name)
         else:
-            self.logger.error(
-                "Error adding a Floating IP: No pools available.")
-            return None
+            for pool in client.floating_ip_pools.list():
+                try:
+                    return client.floating_ips.create(pool.name)
+                except NotFound:
+                    self.logger.debug("Error adding a Floating IP: No free IP in pool %s." % pool_name)
 
-    def add_elastic_ip(self, vm, node, fixed_ip=None, pool_name=None):
+        self.logger.error("Error adding a Floating IP: No frees IP")
+        return None
+
+    def add_elastic_ip(self, vm, node, fixed_ip, pool_name, auth_data):
         """
         Add an elastic IP to an instance
 
         Arguments:
            - vm(:py:class:`IM.VirtualMachine`): VM information.
-           - node(:py:class:`libcloud.compute.base.Node`): node object to attach the volumes.
+           - node(:py:class:`novaclient.servers.Server`): node object to attach the volumes.
            - fixed_ip(str, optional): specifies a fixed IP to add to the instance.
-        Returns: a :py:class:`OpenStack_1_1_FloatingIpAddress` added or None if some problem occur.
+        Returns: a :py:class:` novaclient.floating_ips.FloatingIP` added or None if some problem occur.
         """
         if vm.state == VirtualMachine.RUNNING:
             try:
-                self.logger.debug("Add an Elastic/Floating IP")
-
-                if node.driver.ex_list_floating_ip_pools():
-                    if fixed_ip:
-                        floating_ip = node.driver.ex_get_floating_ip(fixed_ip)
-                    else:
-                        created, floating_ip = self.get_floating_ip(
-                            node.driver, pool_name)
-                        if not floating_ip:
-                            self.logger.error("Error adding a Floating IP.")
-                            return None
-                    try:
-                        node.driver.ex_attach_floating_ip_to_node(
-                            node, floating_ip)
-                    except:
-                        self.logger.exception(
-                            "Error attaching a Floating IP to the node.")
-                        if created:
-                            self.logger.debug(
-                                "We have created it, so release it.")
-                            floating_ip.delete()
-                        return None
+                # TODO: see to set a fixed_ip
+                floating_ip = self.get_floating_ip(pool_name, auth_data)
+                try:
+                    node.add_floating_ip(floating_ip)
                     return floating_ip
-                else:
-                    self.logger.error(
-                        "Error adding a Floating IP: No pools available.")
+                except:
+                    self.logger.exception("Error attaching a Floating IP to the node.")
+                    floating_ip.delete()
                     return None
-
             except Exception:
-                self.logger.exception(
-                    "Error adding an Elastic/Floating IP to VM ID: " + str(vm.id))
+                self.logger.exception("Error adding an Floating IP to VM ID: " + str(vm.id))
                 return None
         else:
-            self.logger.debug(
-                "The VM is not running, not adding an Elastic/Floating IP.")
+            self.logger.debug("The VM is not running, not adding an Floating IP.")
             return None
 
     @staticmethod
-    def _get_security_group(driver, sg_name):
+    def _get_security_group(client, sg_name):
         try:
             sg = None
-            for elem in driver.ex_list_security_groups():
+            for elem in client.security_groups.list():
                 if elem.name == sg_name:
                     sg = elem
                     break
@@ -500,21 +622,20 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         except Exception:
             return None
 
-    def create_security_group(self, driver, inf, radl):
+    def create_security_group(self, client, inf, radl):
         res = None
         # Use the InfrastructureInfo lock to assure that only one VM create the SG
         with inf._lock:
             sg_name = "im-" + str(inf.id)
-            sg = self._get_security_group(driver, sg_name)
+            sg = self._get_security_group(client, sg_name)
 
             if not sg:
                 self.logger.debug("Creating security group: " + sg_name)
-                sg = driver.ex_create_security_group(
-                    sg_name, "Security group created by the IM")
+                sg = client.security_groups.create(sg_name, "Security group created by the IM")
             else:
-                return [sg]
+                return [sg.id]
 
-            res = [sg]
+            res = [sg.id]
 
         public_net = None
         for net in radl.networks:
@@ -525,30 +646,24 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
             outports = public_net.getOutPorts()
             if outports:
                 for remote_port, remote_protocol, local_port, local_protocol in outports:
-                    if local_port != 22 and local_port != 5099:
+                    if local_port != 22:
                         protocol = remote_protocol
                         if remote_protocol != local_protocol:
                             self.logger.warn(
                                 "Different protocols used in outports ignoring local port protocol!")
 
                         try:
-                            driver.ex_create_security_group_rule(
-                                sg, protocol, remote_port, remote_port, '0.0.0.0/0')
+                            client.security_group_rules.create(sg.id, protocol, remote_port, remote_port, '0.0.0.0/0')
                         except Exception, ex:
                             self.logger.warn(
                                 "Exception adding SG rules: " + str(ex))
 
         try:
-            driver.ex_create_security_group_rule(
-                sg, 'tcp', 22, 22, '0.0.0.0/0')
-            driver.ex_create_security_group_rule(
-                sg, 'tcp', 5099, 5099, '0.0.0.0/0')
+            client.security_group_rules.create(sg.id, 'tcp', 22, 22, '0.0.0.0/0')
 
             # open all the ports for the VMs in the security group
-            driver.ex_create_security_group_rule(
-                sg, 'tcp', 1, 65535, source_security_group=sg)
-            driver.ex_create_security_group_rule(
-                sg, 'udp', 1, 65535, source_security_group=sg)
+            client.security_group_rules.create(sg.id, 'tcp', 1, 65535, group_id=sg.id)
+            client.security_group_rules.create(sg.id, 'udp', 1, 65535, group_id=sg.id)
         except Exception, addex:
             self.logger.warn(
                 "Exception adding SG rules. Probably the rules exists:" + str(addex))
@@ -560,9 +675,15 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         node = self.get_node_with_id(vm.id, auth_data)
 
         if node:
-            sgs = node.driver.ex_get_node_security_groups(node)
+            client = self.get_client(auth_data)
+            sgs = node.list_security_group()
 
-            success = node.destroy()
+            success = False
+            try:
+                node.delete()
+                success = True
+            except:
+                self.logger.exception("Error destroying VM " + str(vm.id))
 
             try:
                 public_key = vm.getRequestedSystem().getValue(
@@ -571,17 +692,15 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                         (len(public_key) >= 1 and public_key.find('-----BEGIN CERTIFICATE-----') != -1)):
                     # only delete in case of the user do not specify the
                     # keypair name
-                    keypair = node.driver.get_key_pair(vm.keypair)
-                    if keypair:
-                        node.driver.delete_key_pair(keypair)
+                    client.keypairs.get(vm.keypair).delete()
 
-                self.delete_elastic_ips(node, vm)
+                self.delete_floating_ips(node, vm, client)
 
-                # Delete the EBS volumes
+                # Delete the attached volumes
                 self.delete_volumes(vm)
 
                 # Delete the SG if this is the last VM
-                self.delete_security_group(node, sgs, vm.inf, vm.id)
+                self.delete_security_group(node, sgs, vm.inf, vm.id, client)
             except:
                 self.logger.exception("VM " + str(vm.id) + " successfully destroyed. "
                                       "But some errors in deleting other elements, Ignoring it.")
@@ -595,7 +714,27 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
 
         return (True, "")
 
-    def delete_security_group(self, node, sgs, inf, vm_id, timeout=60):
+    def delete_floating_ips(self, node, vm, client):
+        """
+        remove the floating IPs of a VM
+
+        Arguments:
+           - node(:py:class:`novaclient.servers.Server``): node object to attach the volumes.
+           - vm(:py:class:`IM.VirtualMachine`): VM information.
+        """
+        try:
+            self.logger.debug("Remove Floating IPs")
+            for floating_ip in client.floating_ips.list():
+                if floating_ip.instance_id == node.id:
+                    # remove it from the node
+                    node.remove_floating_ip(floating_ip)
+                    # delete the ip
+                    floating_ip.delete()
+        except Exception:
+            self.logger.exception(
+                "Error removing Elastic/Floating IPs to VM ID: " + str(vm.id))
+
+    def delete_security_group(self, node, sgs, inf, vm_id, client, timeout=60):
         """
         Delete the SG of this infrastructure if this is the last VM
         """
@@ -616,11 +755,11 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                     time.sleep(5)
                     cont += 5
                     try:
-                        node.driver.ex_delete_security_group(sg)
+                        sg.delete()
                         deleted = True
                     except Exception, ex:
                         # Check if it has been deleted yet
-                        sg = self._get_security_group(node.driver, sg.name)
+                        sg = self._get_security_group(client, sg.name)
                         if not sg:
                             self.logger.debug(
                                 "Error deleting the SG. But it does not exist. Ignore. " + str(ex))
@@ -629,8 +768,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                             self.logger.exception("Error deleting the SG.")
             else:
                 # If there are more than 1, we skip this step
-                self.logger.debug(
-                    "There are active instances. Not removing the SG")
+                self.logger.debug("There are active instances. Not removing the SG")
         else:
             self.logger.warn("No Security Groups to delete")
 
@@ -652,3 +790,70 @@ users:
         if cloud_config_str:
             config += "\n%s\n\n" % cloud_config_str.replace("\\n", "\n")
         return config
+
+    def delete_volumes(self, vm, timeout=300):
+        """
+        Delete the volumes of a VM
+
+        Arguments:
+           - vm(:py:class:`IM.VirtualMachine`): VM information.
+           - timeout(int): Time needed to delete the volume.
+        """
+        all_ok = True
+        if "volumes" in vm.__dict__.keys() and vm.volumes:
+            for volume in vm.volumes:
+                try:
+                    success = self.wait_volume(volume, timeout=timeout)
+                    if not success:
+                        self.logger.error("Error waiting the volume ID " + str(volume.id))
+                    success = volume.delete()
+                    if not success:
+                        self.logger.error("Error destroying the volume: " + str(volume.id))
+                except:
+                    self.logger.exception("Error destroying the volume: " + str(volume.id) + " from the node: " + vm.id)
+                    success = False
+
+                if not success:
+                    all_ok = False
+        return all_ok
+
+    def start(self, vm, auth_data):
+        node = self.get_node_with_id(vm.id, auth_data)
+        if node:
+            try:
+                node.resume()
+                return (True, "")
+            except Exception, ex:
+                self.logger.exception("Error starting VM: " % str(ex))
+                return (False, "Error starting VM: " % str(ex))
+        else:
+            return (False, "VM not found with id: " + vm.id)
+
+    def stop(self, vm, auth_data):
+        node = self.get_node_with_id(vm.id, auth_data)
+        if node:
+            try:
+                node.suspend()
+                return (True, "")
+            except Exception, ex:
+                self.logger.exception("Error stopping VM: " % str(ex))
+                return (False, "Error stopping VM: " % str(ex))
+        else:
+            return (False, "VM not found with id: " + vm.id)
+
+    def alterVM(self, vm, radl, auth_data):
+        node = self.get_node_with_id(vm.id, auth_data)
+        if node:
+            client = self.get_client(auth_data)
+            instance_type = self.get_instance_type(client.flavors.list(), radl.systems[0])
+
+            try:
+                node.resize(instance_type)
+                node.confirm_resize()
+            except Exception, ex:
+                self.logger.exception("Error resizing VM.")
+                return (False, "Error resizing VM: " + str(ex))
+
+            return (True, "")
+        else:
+            return (False, "VM not found with id: " + vm.id)

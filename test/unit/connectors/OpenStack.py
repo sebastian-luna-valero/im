@@ -75,7 +75,7 @@ class TestOSTConnector(unittest.TestCase):
         one_cloud = OpenStackCloudConnector(cloud_info)
         return one_cloud
 
-    @patch('IM.connectors.OpenStack.client')
+    @patch('IM.connectors.OpenStack.novacli')
     def test_10_concrete(self, client):
         radl_data = """
             network net ()
@@ -109,7 +109,7 @@ class TestOSTConnector(unittest.TestCase):
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
         self.clean_log()
 
-    @patch('IM.connectors.OpenStack.client')
+    @patch('IM.connectors.OpenStack.novacli')
     def test_20_launch(self, client):
         radl_data = """
             network net1 (outbound = 'yes' and provider_id = 'public' and outports = '8080')
@@ -169,7 +169,7 @@ class TestOSTConnector(unittest.TestCase):
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
         self.clean_log()
 
-    @patch('IM.connectors.OpenStack.client')
+    @patch('IM.connectors.OpenStack.novacli')
     def test_30_updateVMInfo(self, client):
         radl_data = """
             network net (outbound = 'yes')
@@ -227,7 +227,7 @@ class TestOSTConnector(unittest.TestCase):
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
         self.clean_log()
 
-    @patch('IM.connectors.OpenStack.client')
+    @patch('IM.connectors.OpenStack.novacli')
     def test_40_stop(self, client):
         auth = Authentication([{'id': 'ost', 'type': 'OpenStack', 'username': 'user',
                                 'password': 'pass', 'tenant': 'tenant', 'host': 'https://server.com:5000'}])
@@ -254,7 +254,7 @@ class TestOSTConnector(unittest.TestCase):
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
         self.clean_log()
 
-    @patch('IM.connectors.OpenStack.client')
+    @patch('IM.connectors.OpenStack.novacli')
     def test_50_start(self, client):
         auth = Authentication([{'id': 'ost', 'type': 'OpenStack', 'username': 'user',
                                 'password': 'pass', 'tenant': 'tenant', 'host': 'https://server.com:5000'}])
@@ -281,7 +281,7 @@ class TestOSTConnector(unittest.TestCase):
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
         self.clean_log()
 
-    @patch('IM.connectors.OpenStack.client')
+    @patch('IM.connectors.OpenStack.novacli')
     def test_55_alter(self, client):
         radl_data = """
             network net ()
@@ -337,7 +337,7 @@ class TestOSTConnector(unittest.TestCase):
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
         self.clean_log()
 
-    @patch('IM.connectors.OpenStack.client')
+    @patch('IM.connectors.OpenStack.novacli')
     @patch('time.sleep')
     def test_60_finalize(self, sleep, client):
         auth = Authentication([{'id': 'ost', 'type': 'OpenStack', 'username': 'user',

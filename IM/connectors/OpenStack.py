@@ -15,13 +15,16 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import time
+import os
 
 from netaddr import IPNetwork, IPAddress
 from IM.config import Config
 from IM.uriparse import uriparse
 from IM.VirtualMachine import VirtualMachine
 from CloudConnector import CloudConnector
-from novaclient import client
+
+from novaclient import client as novacli
+from neutronclient.v2_0 import client as neutroncli
 from novaclient.exceptions import NotFound
 
 from radl.radl import Feature
@@ -53,10 +56,11 @@ class OpenStackCloudConnector(CloudConnector):
 
     def __init__(self, cloud_info):
         self.auth = None
-        self.client = None
+        self.novaclient = None
+        self.netronclient = None
         CloudConnector.__init__(self, cloud_info)
 
-    def get_client(self, auth_data):
+    def get_client(self, auth_data, type="nova"):
         """
         Get the OST client from the auth data
 
@@ -71,8 +75,8 @@ class OpenStackCloudConnector(CloudConnector):
         else:
             auth = auths[0]
 
-        if self.client and self.auth.compare(auth_data, self.type):
-            return self.client
+        if self.novaclient and self.netronclient and self.auth.compare(auth_data, self.type):
+            pass
         else:
             self.auth = auth_data
 
@@ -99,17 +103,34 @@ class OpenStackCloudConnector(CloudConnector):
                     "No correct auth data has been specified to OpenStack: username, password and tenant")
 
             version = "2.0"
-            nova = client.Client(version,
-                                 username=auth['username'],
-                                 api_key=auth['password'],
-                                 project_id=auth['tenant'],
-                                 auth_url=parameters["auth_url"],
-                                 region_name=parameters["service_region"],
-                                 service_name=parameters["service_name"],
-                                 bypass_url=parameters["base_url"])
+            nova = novacli.Client(version,
+                                  username=auth['username'],
+                                  api_key=auth['password'],
+                                  project_id=auth['tenant'],
+                                  auth_url=parameters["auth_url"],
+                                  region_name=parameters["service_region"],
+                                  service_name=parameters["service_name"],
+                                  bypass_url=parameters["base_url"],
+                                  insecure=True)
 
-            self.client = nova
-            return nova
+            self.novaclient = nova
+
+            neutron = neutroncli.Client(auth_url=parameters["auth_url"],
+                                        username=auth['username'],
+                                        password=auth['password'],
+                                        tenant_name=auth['tenant'],
+                                        region_name=parameters["service_region"],
+                                        insecure=True)
+
+            self.netronclient = neutron
+
+        if type == "nova":
+            return self.novaclient
+        elif type == "neutron":
+            return self.netronclient
+        else:
+            self.logger.error("Invalid type: %s" % type)
+            return None
 
     def get_instance_type(self, flavors, radl):
         """
@@ -301,14 +322,21 @@ class OpenStackCloudConnector(CloudConnector):
             if net_name:
                 for radl_net in radl_nets:
                     net_provider_id = radl_net.getValue('provider_id')
+                    subnet_cidr = radl_net.getValue('cidr')
                     if net_provider_id:
                         if net_name == net_provider_id:
-                            res[radl_net.id] = ip
-                            break
+                            if subnet_cidr:
+                                if IPAddress(ip) in IPNetwork(subnet_cidr):
+                                    res[radl_net.id] = ip
+                                    break
+                            else:
+                                res[radl_net.id] = ip
+                                break
                     else:
                         if radl_net.id not in res and radl_net.isPublic() == is_public:
                             res[radl_net.id] = ip
-                            radl_net.setValue('provider_id', net_name)
+                            if radl_net.getValue('provider_id') is None:
+                                radl_net.setValue('provider_id', net_name)
                             break
             else:
                 # It seems to be a floating IP
@@ -367,38 +395,83 @@ class OpenStackCloudConnector(CloudConnector):
             system.addFeature(Feature("cpu.count", "=", flavor.vcpus),
                               conflict="me", missing="other")
 
-    def get_networks(self, client, radl):
+    def get_networks(self, auth_data, radl):
         """
         Get the list of networks to connect the VM
         """
-        nets = []
-        ost_nets = client.networks.list()
-        used_nets = []
-        # I use this "patch" as used in the LibCloud OpenStack driver
-        public_networks_labels = ['public', 'internet', 'publica']
+        novacli = self.get_client(auth_data, "nova")
+        neutroncli = self.get_client(auth_data, "neutron")
 
-        for radl_net in radl.networks:
-            # check if this net is connected with the current VM
-            if radl.systems[0].getNumNetworkWithConnection(radl_net.id) is not None:
-                # First check if the user has specified a provider ID
-                net_provider_id = radl_net.getValue('provider_id')
-                if net_provider_id:
-                    for net in ost_nets:
-                        if net.label == net_provider_id:
-                            if net.label not in used_nets:
-                                nets.append({'net-%s' % radl_net.id: net.id})
-                                used_nets.append(net.label)
-                            break
-                else:
-                    # if not select the first not used net
-                    for net in ost_nets:
-                        # I use this "patch" as used in the LibCloud OpenStack
-                        # driver
-                        if net.label not in public_networks_labels:
-                            if net.label not in used_nets:
-                                nets.append({'net-%s' % radl_net.id: net.id})
-                                used_nets.append(net.label)
+        nets = []
+
+        try:
+            # First try to access neutron
+            ost_nets = []
+            for subnet in neutroncli.list_subnets()['subnets']:
+                os_net = neutroncli.show_network(subnet['network_id'])['network']
+                ip = os.path.dirname(subnet['cidr'])
+                is_public = not (any([IPAddress(ip) in IPNetwork(mask) for mask in Config.PRIVATE_NET_MASKS]))
+                ost_nets.append((subnet['id'], subnet['name'], os_net['name'], subnet['cidr'], is_public))
+
+            used_nets = []
+            for radl_net in radl.networks:
+                # check if this net is connected with the current VM
+                num_net = radl.systems[0].getNumNetworkWithConnection(radl_net.id)
+                if num_net is not None:
+                    os_net_assigned = None
+
+                    # First check if the user has specified a provider ID
+                    net_provider_id = radl_net.getValue('provider_id')
+                    if net_provider_id:
+                        for sub_id, sub_name, net_name, sub_cidr, is_public in ost_nets:
+                            if sub_name == net_provider_id:
+                                os_net_assigned = (sub_id, net_name, sub_name, sub_cidr)
+                                used_nets.append(sub_name)
+                    else:
+                        # if not select the first not used net
+                        for sub_id, sub_name, net_name, sub_cidr, is_public in ost_nets:
+                            if sub_name not in used_nets and radl_net.isPublic() == is_public:
+                                    os_net_assigned = (sub_id, net_name, sub_name, sub_cidr)
+                                    used_nets.append(sub_name)
+                                    break
+
+                    if os_net_assigned:
+                        sub_id, net_name, sub_name, sub_cidr = os_net_assigned
+                        nets.append({'net-%s' % radl_net.id: sub_id})
+                        radl_net.setValue('provider_id', net_name)
+                        radl_net.setValue('subnet_id', sub_name)
+                        radl_net.setValue('cidr', sub_cidr)
+
+        except Exception, ex:
+            self.logger.debug("Error getting networks with neutron: %s. Trying with nova." % str(ex))
+            ost_nets = novacli.networks.list()
+
+            used_nets = []
+            # I use this "patch" as used in the LibCloud OpenStack driver
+            public_networks_labels = ['public', 'internet', 'publica']
+
+            for radl_net in radl.networks:
+                # check if this net is connected with the current VM
+                if radl.systems[0].getNumNetworkWithConnection(radl_net.id) is not None:
+                    # First check if the user has specified a provider ID
+                    net_provider_id = radl_net.getValue('provider_id')
+                    if net_provider_id:
+                        for net in ost_nets:
+                            if net.label == net_provider_id:
+                                if net.label not in used_nets:
+                                    nets.append({'net-%s' % radl_net.id: net.id})
+                                    used_nets.append(net.label)
                                 break
+                    else:
+                        # if not select the first not used net
+                        for net in ost_nets:
+                            # I use this "patch" as used in the LibCloud OpenStack
+                            # driver
+                            if net.label not in public_networks_labels:
+                                if net.label not in used_nets:
+                                    nets.append({'net-%s' % radl_net.id: net.id})
+                                    used_nets.append(net.label)
+                                    break
 
         return nets
 
@@ -446,7 +519,7 @@ class OpenStackCloudConnector(CloudConnector):
         if not name:
             name = "userimage"
 
-        nets = self.get_networks(client, radl)
+        nets = self.get_networks(auth_data, radl)
 
         sgs = self.create_security_group(client, inf, radl)
 
@@ -677,6 +750,7 @@ class OpenStackCloudConnector(CloudConnector):
         if node:
             client = self.get_client(auth_data)
             sgs = node.list_security_group()
+            floating_ips = client.floating_ips.list()
 
             success = False
             try:
@@ -694,7 +768,7 @@ class OpenStackCloudConnector(CloudConnector):
                     # keypair name
                     client.keypairs.get(vm.keypair).delete()
 
-                self.delete_floating_ips(node, vm, client)
+                self.delete_floating_ips(node, vm, floating_ips)
 
                 # Delete the attached volumes
                 self.delete_volumes(vm)
@@ -714,7 +788,7 @@ class OpenStackCloudConnector(CloudConnector):
 
         return (True, "")
 
-    def delete_floating_ips(self, node, vm, client):
+    def delete_floating_ips(self, node, vm, floating_ips):
         """
         remove the floating IPs of a VM
 
@@ -724,10 +798,8 @@ class OpenStackCloudConnector(CloudConnector):
         """
         try:
             self.logger.debug("Remove Floating IPs")
-            for floating_ip in client.floating_ips.list():
+            for floating_ip in floating_ips:
                 if floating_ip.instance_id == node.id:
-                    # remove it from the node
-                    node.remove_floating_ip(floating_ip)
                     # delete the ip
                     floating_ip.delete()
         except Exception:

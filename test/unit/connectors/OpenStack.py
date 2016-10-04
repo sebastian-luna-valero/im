@@ -110,7 +110,8 @@ class TestOSTConnector(unittest.TestCase):
         self.clean_log()
 
     @patch('IM.connectors.OpenStack.novacli')
-    def test_20_launch(self, client):
+    @patch('IM.connectors.OpenStack.neutroncli')
+    def test_20_launch(self, neutroncli, novacli):
         radl_data = """
             network net1 (outbound = 'yes' and provider_id = 'public' and outports = '8080')
             network net2 ()
@@ -136,7 +137,10 @@ class TestOSTConnector(unittest.TestCase):
         ost_cloud = self.get_ost_cloud()
 
         client_mock = MagicMock()
-        client.Client.return_value = client_mock
+        novacli.Client.return_value = client_mock
+
+        neutroncli_mock = MagicMock()
+        neutroncli.Client.return_value = neutroncli_mock
 
         node_size = MagicMock()
         node_size.ram = 512
@@ -144,9 +148,10 @@ class TestOSTConnector(unittest.TestCase):
         node_size.name = "small"
         client_mock.flavors.list.return_value = [node_size]
 
-        net = MagicMock()
-        net.name = "public"
-        client_mock.networks.list.return_value = [net]
+        net = {'network': {'name': 'netname'}}
+        subnet = {'subnets': [{'network_id': 'netid', 'cidr': '10.0.0.0/24', 'id': 'subid', 'name': 'subname'}]}
+        neutroncli_mock.list_subnets.return_value = subnet
+        neutroncli_mock.show_network.return_value = net
 
         sg = MagicMock()
         sg.name = "sg"

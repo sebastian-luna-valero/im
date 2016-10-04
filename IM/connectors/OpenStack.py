@@ -399,79 +399,45 @@ class OpenStackCloudConnector(CloudConnector):
         """
         Get the list of networks to connect the VM
         """
-        novacli = self.get_client(auth_data, "nova")
         neutroncli = self.get_client(auth_data, "neutron")
 
         nets = []
 
-        try:
-            # First try to access neutron
-            ost_nets = []
-            for subnet in neutroncli.list_subnets()['subnets']:
-                os_net = neutroncli.show_network(subnet['network_id'])['network']
-                ip = os.path.dirname(subnet['cidr'])
-                is_public = not (any([IPAddress(ip) in IPNetwork(mask) for mask in Config.PRIVATE_NET_MASKS]))
-                ost_nets.append((subnet['id'], subnet['name'], os_net['name'], subnet['cidr'], is_public))
+        ost_nets = []
+        for subnet in neutroncli.list_subnets()['subnets']:
+            os_net = neutroncli.show_network(subnet['network_id'])['network']
+            ip = os.path.dirname(subnet['cidr'])
+            is_public = not (any([IPAddress(ip) in IPNetwork(mask) for mask in Config.PRIVATE_NET_MASKS]))
+            ost_nets.append((subnet['id'], subnet['name'], os_net['name'], subnet['cidr'], is_public))
 
-            used_nets = []
-            for radl_net in radl.networks:
-                # check if this net is connected with the current VM
-                num_net = radl.systems[0].getNumNetworkWithConnection(radl_net.id)
-                if num_net is not None:
-                    os_net_assigned = None
+        used_nets = []
+        for radl_net in radl.networks:
+            # check if this net is connected with the current VM
+            num_net = radl.systems[0].getNumNetworkWithConnection(radl_net.id)
+            if num_net is not None:
+                os_net_assigned = None
 
-                    # First check if the user has specified a provider ID
-                    net_provider_id = radl_net.getValue('provider_id')
-                    if net_provider_id:
-                        for sub_id, sub_name, net_name, sub_cidr, is_public in ost_nets:
-                            if sub_name == net_provider_id:
+                # First check if the user has specified a provider ID
+                net_provider_id = radl_net.getValue('provider_id')
+                if net_provider_id:
+                    for sub_id, sub_name, net_name, sub_cidr, is_public in ost_nets:
+                        if sub_name == net_provider_id:
+                            os_net_assigned = (sub_id, net_name, sub_name, sub_cidr)
+                            used_nets.append(sub_name)
+                else:
+                    # if not select the first not used net
+                    for sub_id, sub_name, net_name, sub_cidr, is_public in ost_nets:
+                        if sub_name not in used_nets and radl_net.isPublic() == is_public:
                                 os_net_assigned = (sub_id, net_name, sub_name, sub_cidr)
                                 used_nets.append(sub_name)
-                    else:
-                        # if not select the first not used net
-                        for sub_id, sub_name, net_name, sub_cidr, is_public in ost_nets:
-                            if sub_name not in used_nets and radl_net.isPublic() == is_public:
-                                    os_net_assigned = (sub_id, net_name, sub_name, sub_cidr)
-                                    used_nets.append(sub_name)
-                                    break
-
-                    if os_net_assigned:
-                        sub_id, net_name, sub_name, sub_cidr = os_net_assigned
-                        nets.append({'net-%s' % radl_net.id: sub_id})
-                        radl_net.setValue('provider_id', net_name)
-                        radl_net.setValue('subnet_id', sub_name)
-                        radl_net.setValue('cidr', sub_cidr)
-
-        except Exception, ex:
-            self.logger.debug("Error getting networks with neutron: %s. Trying with nova." % str(ex))
-            ost_nets = novacli.networks.list()
-
-            used_nets = []
-            # I use this "patch" as used in the LibCloud OpenStack driver
-            public_networks_labels = ['public', 'internet', 'publica']
-
-            for radl_net in radl.networks:
-                # check if this net is connected with the current VM
-                if radl.systems[0].getNumNetworkWithConnection(radl_net.id) is not None:
-                    # First check if the user has specified a provider ID
-                    net_provider_id = radl_net.getValue('provider_id')
-                    if net_provider_id:
-                        for net in ost_nets:
-                            if net.label == net_provider_id:
-                                if net.label not in used_nets:
-                                    nets.append({'net-%s' % radl_net.id: net.id})
-                                    used_nets.append(net.label)
                                 break
-                    else:
-                        # if not select the first not used net
-                        for net in ost_nets:
-                            # I use this "patch" as used in the LibCloud OpenStack
-                            # driver
-                            if net.label not in public_networks_labels:
-                                if net.label not in used_nets:
-                                    nets.append({'net-%s' % radl_net.id: net.id})
-                                    used_nets.append(net.label)
-                                    break
+
+                if os_net_assigned:
+                    sub_id, net_name, sub_name, sub_cidr = os_net_assigned
+                    nets.append({'net-%s' % radl_net.id: sub_id})
+                    radl_net.setValue('provider_id', net_name)
+                    radl_net.setValue('subnet_id', sub_name)
+                    radl_net.setValue('cidr', sub_cidr)
 
         return nets
 
@@ -521,16 +487,17 @@ class OpenStackCloudConnector(CloudConnector):
 
         nets = self.get_networks(auth_data, radl)
 
-        sgs = self.create_security_group(client, inf, radl)
+        sg = self.create_security_group(client, inf, radl)
 
         args = {'flavor': instance_type.id,
                 'image': image.id,
                 'networks': nets,
-                'security_groups': sgs,
+                'security_groups': [sg.id],
                 'name': "%s-%s" % (name, int(time.time() * 100))}
 
         keypair = None
         keypair_name = None
+        keypair_created = False
         public_key = system.getValue("disk.0.os.credentials.public_key")
         if public_key:
             try:
@@ -541,11 +508,15 @@ class OpenStackCloudConnector(CloudConnector):
                 system.setUserKeyCredentials(system.getCredentials().username, None, keypair.private_key)
             else:
                 keypair_name = "im-%d" % int(time.time() * 100.0)
+                self.logger.debug("Create keypair: %s" % keypair_name)
                 keypair = client.keypairs.create(keypair_name, public_key)
+                keypair_created = True
 
         elif not system.getValue("disk.0.os.credentials.password"):
             keypair_name = "im-%d" % int(time.time() * 100.0)
+            self.logger.debug("Create keypair: %s" % keypair_name)
             keypair = client.keypairs.create(keypair_name)
+            keypair_created = True
             public_key = keypair.public_key
             system.setUserKeyCredentials(system.getCredentials().username, None, keypair.private_key)
 
@@ -570,11 +541,15 @@ class OpenStackCloudConnector(CloudConnector):
         while i < num_vm:
             self.logger.debug("Creating node")
 
-            node = client.servers.create(**args)
+            node = None
+            msg = "Error creating the node. "
+            try:
+                node = client.servers.create(**args)
+            except Exception, ex:
+                msg += str(ex)
 
             if node:
-                vm = VirtualMachine(
-                    inf, node.id, self.cloud, radl, requested_radl, self.cloud.getCloudConnector())
+                vm = VirtualMachine(inf, node.id, self.cloud, radl, requested_radl, self.cloud.getCloudConnector())
                 vm.info.systems[0].setValue('instance_id', str(node.id))
                 vm.info.systems[0].setValue('instance_name', str(node.name))
                 # Add the keypair name to remove it later
@@ -584,18 +559,17 @@ class OpenStackCloudConnector(CloudConnector):
                 all_failed = False
                 res.append((True, vm))
             else:
-                res.append((False, "Error creating the node"))
+                res.append((False, msg))
             i += 1
 
         # if all the VMs have failed, remove the sg and keypair
         if all_failed:
-            if (public_key is None or len(public_key) == 0 or
-                    (len(public_key) >= 1 and public_key.find('-----BEGIN CERTIFICATE-----') != -1)):
-                # only delete in case of the user do not specify the keypair
-                # name
+            if keypair_created:
+                self.logger.debug("Deleting keypair: %s." % keypair_name)
                 keypair.delete()
-            if sgs:
-                sgs[0].delete()
+            if sg:
+                self.logger.debug("Deleting security group: %s." % sg.id)
+                sg.delete()
 
         return res
 
@@ -706,9 +680,9 @@ class OpenStackCloudConnector(CloudConnector):
                 self.logger.debug("Creating security group: " + sg_name)
                 sg = client.security_groups.create(sg_name, "Security group created by the IM")
             else:
-                return [sg.id]
+                return sg
 
-            res = [sg.id]
+            res = sg
 
         public_net = None
         for net in radl.networks:

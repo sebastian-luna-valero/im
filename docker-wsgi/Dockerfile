@@ -19,6 +19,7 @@ COPY ansible.cfg /etc/ansible/ansible.cfg
 RUN apt install -y libapache2-mod-wsgi
 
 RUN echo "LoadModule wsgi_module /usr/lib/apache2/modules/mod_wsgi.so" >> /usr/local/apache2/conf/httpd.conf
+RUN sed -i -e 's/Listen 80/Listen 8800/g' /usr/local/apache2/conf/httpd.conf
 
 RUN mkdir /usr/local/apache2/im
 COPY im_wsgi.py /usr/local/apache2/im/im.wsgi

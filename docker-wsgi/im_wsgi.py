@@ -16,10 +16,11 @@
 
 import bottle
 import logging
+import logging.config
 from IM.REST import (RESTAddResource, RESTAlterVM, RESTCreateInfrastructure, RESTGetInfrastructureInfo,
                      RESTGetInfrastructureList, RESTGetVMInfo, RESTGetInfrastructureProperty,
                      RESTGeVersion, RESTReconfigureInfrastructure, RESTRemoveResource, RESTStartInfrastructure,
-                     RESTStartVM, RESTStopVM, RESTDestroyInfrastructure)
+                     RESTStartVM, RESTStopVM, RESTDestroyInfrastructure, RESTGetVMProperty)
 
 logging.config.fileConfig('/etc/im/logging.conf')
 logger = logging.getLogger('InfrastructureManager')

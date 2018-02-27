@@ -40,6 +40,13 @@ try:
 except:
     MYSQL_AVAILABLE = False
 
+if not MYSQL_AVAILABLE:
+    try:
+        import pymysql as mdb
+        MYSQL_AVAILABLE = True
+    except:
+        MYSQL_AVAILABLE = False
+
 
 # Class to manage DB operations
 class DataBase:
@@ -48,7 +55,9 @@ class DataBase:
     db_available = SQLITE_AVAILABLE or MYSQL_AVAILABLE
     RETRY_SLEEP = 2
     MAX_RETRIES = 15
-    DB_TYPES = ["SQLite", "MySQL"]
+    MYSQL = "MySQL"
+    SQLITE = "SQLite"
+    DB_TYPES = [MYSQL, SQLITE]
 
     def __init__(self, db_url):
         self.db_url = db_url
@@ -65,7 +74,7 @@ class DataBase:
         protocol = uri[0]
         if protocol == "mysql":
             return self._connect_mysql(uri[1], uri[2][1:])
-        elif protocol == "file" or not protocol:  # sqlite is the default one
+        elif protocol == "file" or protocol == "sqlite" or not protocol:  # sqlite is the default one
             return self._connect_sqlite(uri[2])
 
         return False
@@ -97,7 +106,7 @@ class DataBase:
             if not port:
                 port = 3306
             self.connection = mdb.connect(server, username, password, db, port)
-            self.db_type = "MySQL"
+            self.db_type = DataBase.MYSQL
             return True
         else:
             return False
@@ -105,7 +114,7 @@ class DataBase:
     def _connect_sqlite(self, db_filename):
         if SQLITE_AVAILABLE:
             self.connection = sqlite.connect(db_filename)
-            self.db_type = "SQLite"
+            self.db_type = DataBase.SQLITE
             return True
         else:
             return False
@@ -131,22 +140,22 @@ class DataBase:
                 try:
                     cursor = self.connection.cursor()
                     if args is not None:
-                        if not SQLITE3_AVAILABLE:
+                        if self.db_type == DataBase.SQLITE:
+                            new_sql = sql.replace("%s", "?").replace("now()", "date('now')")
+                        elif self.db_type == DataBase.MYSQL:
                             new_sql = sql.replace("?", "%s")
-                        else:
-                            new_sql = sql
                         cursor.execute(new_sql, args)
                     else:
                         cursor.execute(sql)
 
                     if fetch:
-                        res = cursor.fetchall()
+                        res = list(cursor.fetchall())
                     else:
                         self.connection.commit()
                         res = True
                     return res
                 # If the operational error is db lock, retry
-                except sqlite.OperationalError, ex:
+                except sqlite.OperationalError as ex:
                     if str(ex).lower() == 'database is locked':
                         retries_cont += 1
                         # release the connection
@@ -156,7 +165,7 @@ class DataBase:
                         self.connect()
                     else:
                         raise ex
-                except sqlite.IntegrityError, ex:
+                except sqlite.IntegrityError as ex:
                     raise IntegrityError()
 
     def execute(self, sql, args=None):
@@ -206,8 +215,10 @@ class DataBase:
             res = self.select(
                 'select name from sqlite_master where type="table" and name="' + table_name + '"')
         elif self.db_type == "MySQL":
-            res = self.select(
-                'SELECT * FROM information_schema.tables WHERE table_name ="' + table_name + '"')
+            uri = uriparse(self.db_url)
+            db = uri[2][1:]
+            res = self.select('SELECT * FROM information_schema.tables WHERE table_name ="' +
+                              table_name + '" and table_schema = "' + db + '"')
         else:
             return False
 

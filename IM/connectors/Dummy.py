@@ -16,7 +16,7 @@
 
 import time
 from IM.VirtualMachine import VirtualMachine
-from CloudConnector import CloudConnector
+from .CloudConnector import CloudConnector
 from radl.radl import Feature
 
 
@@ -42,6 +42,7 @@ class DummyCloudConnector(CloudConnector):
             now = str(int(time.time() * 100))
             vm = VirtualMachine(inf, now, self.cloud,
                                 requested_radl, requested_radl)
+            inf.add_vm(vm)
 
             vm.info.systems[0].setValue('provider.type', self.type)
             vm.state = VirtualMachine.RUNNING
@@ -56,7 +57,7 @@ class DummyCloudConnector(CloudConnector):
 
         return res
 
-    def finalize(self, vm, auth_data):
+    def finalize(self, vm, last, auth_data):
         return (True, "")
 
     def stop(self, vm, auth_data):
@@ -79,4 +80,13 @@ class DummyCloudConnector(CloudConnector):
         vm.info.systems[0].addFeature(
             Feature("memory.size", "=", new_memory, 'M'), conflict="other", missing="other")
 
+        return (True, "")
+
+    def create_snapshot(self, vm, disk_num, image_name, auto_delete, auth_data):
+        new_url = "mock0://linux.for.ev.er/%s" % image_name
+        if auto_delete:
+            vm.inf.snapshots.append(new_url)
+        return (True, new_url)
+
+    def delete_image(self, image_url, auth_data):
         return (True, "")

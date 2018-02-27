@@ -24,6 +24,15 @@ import sys
 if not hasattr(sys, 'version_info') or sys.version_info < (2, 6):
     raise SystemExit("IM requires Python version 2.6 or above.")
 
+suds_pkg = "suds"
+sqlite_pkg = "pysqlite"
+if sys.version_info > (3, 0):
+    suds_pkg = "suds-py3"
+    sqlite_pkg = ""
+
+if 'bdist_wheel' in sys.argv:
+    raise RuntimeError("This setup.py does not support wheels")
+
 # Add contextualization dir files
 install_path = '/usr/share/im'
 datafiles = [(os.path.join(install_path, root), [os.path.join(root, f) for f in files])
@@ -40,7 +49,8 @@ setup(name="IM", version=version,
       author='GRyCAP - Universitat Politecnica de Valencia',
       author_email='micafer1@upv.es',
       url='http://www.grycap.upv.es/im',
-      packages=['IM', 'IM.ansible', 'IM.connectors'],
+      include_package_data=True,
+      packages=['IM', 'IM.ansible_utils', 'IM.connectors', 'IM.tosca', 'IM.openid', 'IM.tts'],
       scripts=["im_service.py"],
       data_files=datafiles,
       license="GPL version 3, http://www.gnu.org/licenses/gpl-3.0.txt",
@@ -52,6 +62,7 @@ setup(name="IM", version=version,
                         "the user with a fully functional infrastructure."),
       description="IM is a tool to manage virtual infrastructures on Cloud deployments",
       platforms=["any"],
-      install_requires=["ansible >= 1.8", "paramiko >= 1.14", "PyYAML", "SOAPpy",
-                        "boto >= 2.29", "apache-libcloud >= 0.17", "RADL", "bottle", "netaddr", "scp", "python-novaclient"]
+      install_requires=["ansible >= 2.0", "paramiko >= 1.14", "PyYAML", suds_pkg, sqlite_pkg, "cheroot",
+                        "boto >= 2.29", "apache-libcloud >= 2.0", "RADL >= 1.1.0", "bottle", "netaddr",
+                        "requests", "scp", "tosca-parser", "python-novaclient"]
       )

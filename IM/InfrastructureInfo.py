@@ -18,13 +18,25 @@ import logging
 import threading
 import time
 from uuid import uuid1
+import json
 
-from ganglia import ganglia_info
-import ConfManager
-from datetime import datetime
+import IM.ConfManager
+from datetime import datetime, timedelta
 from radl.radl import RADL, Feature, deploy, system, contextualize_item
-from config import Config
-from Queue import PriorityQueue
+from radl.radl_parse import parse_radl
+from radl.radl_json import radlToSimple
+from IM.openid.JWT import JWT
+from IM.config import Config
+try:
+    from Queue import PriorityQueue
+except ImportError:
+    from queue import PriorityQueue
+from IM.VirtualMachine import VirtualMachine
+from IM.auth import Authentication
+from IM.tosca.Tosca import Tosca
+
+if Config.MAX_SIMULTANEOUS_LAUNCHES > 1:
+    from multiprocessing.pool import ThreadPool
 
 
 class IncorrectVMException(Exception):
@@ -74,8 +86,6 @@ class InfrastructureInfo:
         """VM selected as the master node to the contextualization step"""
         self.vm_id = 0
         """Next vm id available."""
-        self.last_ganglia_update = 0
-        """Last update of the ganglia info"""
         self.cont_out = ""
         """Contextualization output message"""
         self.ctxt_tasks = PriorityQueue()
@@ -86,40 +96,107 @@ class InfrastructureInfo:
         """Flag to specify that the configuration threads of this inf has finished successfully or with errors."""
         self.conf_threads = []
         """ List of configuration threads."""
+        self.extra_info = {}
+        """ Extra information about the Infrastructure."""
+        self.last_access = datetime.now()
+        """ Time of the last access to this Inf. """
+        self.snapshots = []
+        """ List of URLs of snapshots made to this Inf that must be deleted on finalization """
 
-    def __getstate__(self):
-        """
-        Function to save the information to pickle
-        """
+    def serialize(self):
         with self._lock:
             odict = self.__dict__.copy()
-        # Quit the ConfManager object and the lock to the data to be store by
-        # pickle
+        # Quit the ConfManager object and the lock to the data to be stored
         del odict['cm']
         del odict['_lock']
         del odict['ctxt_tasks']
         del odict['conf_threads']
-        return odict
+        if 'last_access' in odict:
+            del odict['last_access']
+        if odict['vm_master']:
+            odict['vm_master'] = odict['vm_master'].im_id
+        vm_list = []
+        for vm in odict['vm_list']:
+            vm_list.append(vm.serialize())
+        odict['vm_list'] = vm_list
+        if odict['auth']:
+            odict['auth'] = odict['auth'].serialize()
+        if odict['radl']:
+            odict['radl'] = str(odict['radl'])
+        if odict['extra_info'] and "TOSCA" in odict['extra_info']:
+            odict['extra_info'] = {'TOSCA': odict['extra_info']['TOSCA'].serialize()}
+        return json.dumps(odict)
 
-    def __setstate__(self, dic):
-        """
-        Function to load the information to pickle
-        """
-        self._lock = threading.Lock()
-        with self._lock:
-            self.__dict__.update(dic)
-            # Set the ConfManager object and the lock to the data loaded by
-            # pickle
-            self.cm = None
-            self.ctxt_tasks = PriorityQueue()
-            self.conf_threads = []
+    @staticmethod
+    def deserialize(str_data):
+        newinf = InfrastructureInfo()
+        dic = json.loads(str_data)
+        vm_list = dic['vm_list']
+        vm_master_id = dic['vm_master']
+        dic['vm_master'] = None
+        dic['vm_list'] = []
+        if dic['auth']:
+            dic['auth'] = Authentication.deserialize(dic['auth'])
+        if dic['radl']:
+            dic['radl'] = parse_radl(dic['radl'])
+        if 'extra_info' in dic and dic['extra_info'] and "TOSCA" in dic['extra_info']:
+            try:
+                dic['extra_info']['TOSCA'] = Tosca.deserialize(dic['extra_info']['TOSCA'])
+            except:
+                del dic['extra_info']['TOSCA']
+                InfrastructureInfo.logger.exception("Error deserializing TOSCA document")
+        newinf.__dict__.update(dic)
+        newinf.cloud_connector = None
+        # Set the ConfManager object and the lock to the data loaded
+        newinf.cm = None
+        newinf.ctxt_tasks = PriorityQueue()
+        newinf.conf_threads = []
+        for vm_data in vm_list:
+            vm = VirtualMachine.deserialize(vm_data)
+            vm.inf = newinf
+            if vm.im_id == vm_master_id:
+                newinf.vm_master = vm
+            newinf.vm_list.append(vm)
+        return newinf
 
-    def get_next_vm_id(self):
-        """Get the next vm id available."""
-        with self._lock:
-            vmid = self.vm_id
-            self.vm_id += 1
-        return vmid
+    @staticmethod
+    def deserialize_auth(str_data):
+        """
+        Only Loads auth data
+        """
+        newinf = InfrastructureInfo()
+        dic = json.loads(str_data)
+        newinf.deleted = dic['deleted']
+        newinf.id = dic['id']
+        if dic['auth']:
+            newinf.auth = Authentication.deserialize(dic['auth'])
+        return newinf
+
+    def destroy(self, auth, delete_list=None):
+        """
+        Destroy the VMs listed in delete_list or all if not specified
+        """
+        if delete_list is None:
+            delete_list = list(reversed(self.get_vm_list()))
+
+        exceptions = []
+        if Config.MAX_SIMULTANEOUS_LAUNCHES > 1:
+            pool = ThreadPool(processes=Config.MAX_SIMULTANEOUS_LAUNCHES)
+            pool.map(
+                lambda vm: vm.delete(delete_list, auth, exceptions),
+                delete_list
+            )
+            pool.close()
+        else:
+            # If IM server is the first VM, then it will be the last destroyed
+            for vm in delete_list:
+                vm.delete(delete_list, auth, exceptions)
+
+        if exceptions:
+            msg = ""
+            for e in exceptions:
+                msg += str(e) + "\n"
+            raise Exception("Error destroying the infrastructure: \n%s" % msg)
 
     def delete(self):
         """
@@ -140,6 +217,10 @@ class InfrastructureInfo:
         for vm in self.get_vm_list():
             vm.kill_check_ctxt_process()
 
+        # Create a new empty queue
+        with self._lock:
+            self.ctxt_tasks = PriorityQueue()
+
     def get_cont_out(self):
         """
         Returns the contextualization message
@@ -151,13 +232,27 @@ class InfrastructureInfo:
         Add, and assigns a new VM ID to the infrastructure
         """
         with self._lock:
+            # Set the ID of the pos in the list
+            vm.im_id = len(self.vm_list)
             self.vm_list.append(vm)
+        IM.InfrastructureList.InfrastructureList.save_data(self.id)
 
     def add_cont_msg(self, msg):
         """
         Add a line to the contextualization message
         """
-        self.cont_out += str(datetime.now()) + ": " + str(msg.decode('utf8', 'ignore')) + "\n"
+        try:
+            str_msg = str(msg.decode('utf8', 'ignore'))
+        except:
+            str_msg = msg
+        self.cont_out += str(datetime.now()) + ": " + str_msg + "\n"
+
+    def remove_creating_vms(self):
+        """
+        Remove the VMs with the creating flag
+        """
+        with self._lock:
+            self.vm_list = [vm for vm in self.vm_list if not vm.creating]
 
     def get_vm_list(self):
         """
@@ -175,14 +270,15 @@ class InfrastructureInfo:
             vm_id = int(str_vm_id)
         except:
             raise IncorrectVMException()
-        if vm_id >= 0 and vm_id < len(self.vm_list):
-            vm = self.vm_list[vm_id]
-            if not vm.destroy:
-                return vm
-            else:
-                raise DeletedVMException()
-        else:
-            raise IncorrectVMException()
+
+        with self._lock:
+            for vm in self.vm_list:
+                if vm.im_id == vm_id:
+                    if not vm.destroy:
+                        return vm
+                    else:
+                        raise DeletedVMException()
+        raise IncorrectVMException()
 
     def get_vm_list_by_system_name(self):
         """
@@ -209,14 +305,14 @@ class InfrastructureInfo:
         """
 
         with self._lock:
-            # Add new systems and networks only
+            # Add new networks only
             for s in radl.systems + radl.networks + radl.ansible_hosts:
                 if not self.radl.add(s.clone(), "ignore"):
                     InfrastructureInfo.logger.warn(
                         "Ignoring the redefinition of %s %s" % (type(s), s.getId()))
 
             # Add or update configures
-            for s in radl.configures:
+            for s in radl.configures + radl.systems:
                 self.radl.add(s.clone(), "replace")
                 InfrastructureInfo.logger.warn(
                     "(Re)definition of %s %s" % (type(s), s.getId()))
@@ -270,6 +366,25 @@ class InfrastructureInfo:
         # Check the RADL
         radl.check()
 
+    def get_json_radl(self):
+        """
+        Get the RADL of this Infrastructure in JSON format to
+        send it to the Ansible inventory
+        """
+        radl = self.radl.clone()
+        res_radl = RADL()
+        res_radl.systems = radl.systems
+        res_radl.networks = radl.networks
+        res_radl.deploys = radl.deploys
+        json_data = []
+        # remove "." in key names
+        for elem in radlToSimple(res_radl):
+            new_data = {}
+            for key in elem.keys():
+                new_data[key.replace(".", "_")] = elem[key]
+            json_data.append(new_data)
+        return json.dumps(json_data)
+
     def get_radl(self):
         """
         Get the RADL of this Infrastructure
@@ -312,29 +427,6 @@ class InfrastructureInfo:
                     self.vm_master = vm
                     break
 
-    def update_ganglia_info(self):
-        """
-        Get information about the infrastructure from ganglia monitors.
-        """
-        if Config.GET_GANGLIA_INFO:
-            InfrastructureInfo.logger.debug(
-                "Getting information from monitors")
-
-            now = int(time.time())
-            # To avoid to refresh the information too quickly
-            if now - self.last_ganglia_update > Config.GANGLIA_INFO_UPDATE_FREQUENCY:
-                try:
-                    (success, msg) = ganglia_info.update_ganglia_info(self)
-                except Exception, ex:
-                    success = False
-                    msg = str(ex)
-            else:
-                success = False
-                msg = "The information was updated recently. Using last information obtained"
-
-            if not success:
-                InfrastructureInfo.logger.debug(msg)
-
     def vm_in_ctxt_tasks(self, vm):
         found = False
         with self._lock:
@@ -359,6 +451,10 @@ class InfrastructureInfo:
         else:
             # Otherwise return the value of configured
             return self.configured
+
+    def reset_ctxt_tasks(self):
+        with self._lock:
+            self.ctxt_tasks = PriorityQueue()
 
     def add_ctxt_tasks(self, ctxt_tasks):
         # Use the lock to add all the tasks in a atomic way
@@ -413,8 +509,7 @@ class InfrastructureInfo:
                         break
 
         if not ctxt:
-            InfrastructureInfo.logger.debug(
-                "Inf ID: " + str(self.id) + ": Contextualization disabled by the RADL.")
+            InfrastructureInfo.logger.info("Inf ID: " + str(self.id) + ": Contextualization disabled by the RADL.")
             self.cont_out = "Contextualization disabled by the RADL."
             self.configured = True
             for vm in self.get_vm_list():
@@ -428,41 +523,61 @@ class InfrastructureInfo:
             ) if self.radl.get_configure_by_name(group)]
             # get the contextualize steps specified in the RADL, or use the
             # default value
-            contextualizes = self.radl.contextualize.get_contextualize_items_by_step({
-                                                                                     1: ctxts})
+            contextualizes = self.radl.contextualize.get_contextualize_items_by_step({1: ctxts})
 
             max_ctxt_time = self.radl.contextualize.max_time
             if not max_ctxt_time:
                 max_ctxt_time = Config.MAX_CONTEXTUALIZATION_TIME
 
             ctxt_task = []
-            ctxt_task.append((-3, 0, self, ['kill_ctxt_processes']))
-            ctxt_task.append((-2, 0, self, ['wait_master', 'check_vm_ips']))
-            ctxt_task.append(
-                (-1, 0, self, ['configure_master', 'generate_playbooks_and_hosts']))
+            ctxt_task.append((-4, 0, self, ['kill_ctxt_processes']))
+            ctxt_task.append((-3, 0, self, ['check_vm_ips']))
+            ctxt_task.append((-2, 0, self, ['wait_master']))
+            ctxt_task.append((-1, 0, self, ['configure_master', 'generate_playbooks_and_hosts']))
 
-            for vm in self.get_vm_list():
+            use_dist = len(self.get_vm_list()) > Config.VM_NUM_USE_CTXT_DIST
+            for cont, vm in enumerate(self.get_vm_list()):
                 # Assure to update the VM status before running the ctxt
                 # process
                 vm.update_status(auth)
                 vm.cont_out = ""
+                vm.cloud_connector = None
                 vm.configured = None
                 tasks = {}
 
                 # Add basic tasks for all VMs
-                tasks[0] = ['basic']
-                tasks[1] = ['main_' + vm.info.systems[0].name]
+                if use_dist:
+                    init_steps = 5
+                    tasks[0] = ['install_ansible']
+                    tasks[1] = ['basic']
+                    if cont == 0:
+                        tasks[2] = ['gen_facts_cache']
+                    else:
+                        tasks[2] = []
+                    if cont == 0:
+                        tasks[3] = []
+                    else:
+                        tasks[3] = ['copy_facts_cache']
+                    tasks[4] = ['main_' + vm.info.systems[0].name]
+                else:
+                    init_steps = 2
+                    if cont == 0:
+                        # In the first VM put the wait all ssh task
+                        tasks[0] = ['wait_all_ssh', 'basic']
+                    else:
+                        tasks[0] = ['basic']
+                    tasks[1] = ['main_' + vm.info.systems[0].name]
 
                 # And the specific tasks only for the specified ones
                 if not vm_list or vm.im_id in vm_list:
                     # Then add the configure sections
                     for ctxt_num in contextualizes.keys():
                         for ctxt_elem in contextualizes[ctxt_num]:
+                            step = ctxt_num + init_steps
                             if ctxt_elem.system == vm.info.systems[0].name and ctxt_elem.get_ctxt_tool() == "Ansible":
-                                if ctxt_num not in tasks:
-                                    tasks[ctxt_num] = []
-                                tasks[ctxt_num].append(
-                                    ctxt_elem.configure + "_" + ctxt_elem.system)
+                                if step not in tasks:
+                                    tasks[step] = []
+                                tasks[step].append(ctxt_elem.configure + "_" + ctxt_elem.system)
 
                 for step in tasks.keys():
                     priority = 0
@@ -471,12 +586,16 @@ class InfrastructureInfo:
             self.add_ctxt_tasks(ctxt_task)
 
             if self.cm is None or not self.cm.isAlive():
-                self.cm = ConfManager.ConfManager(self, auth, max_ctxt_time)
+                self.cm = IM.ConfManager.ConfManager(self, auth, max_ctxt_time)
                 self.cm.start()
             else:
+                # update the ConfManager reference to the inf object
+                self.cm.inf = self
                 # update the ConfManager auth
                 self.cm.auth = auth
                 self.cm.init_time = time.time()
+                # restart the failed step
+                self.cm.failed_step = []
 
     def is_authorized(self, auth):
         """
@@ -489,9 +608,37 @@ class InfrastructureInfo:
             for elem in ['username', 'password']:
                 if elem not in other_im_auth:
                     return False
+                if elem not in self_im_auth:
+                    InfrastructureInfo.logger.error("Inf ID %s has not elem %s in the auth data" % (self.id, elem))
+                    return True
                 if self_im_auth[elem] != other_im_auth[elem]:
                     return False
 
+            if 'token' in self_im_auth:
+                if 'token' not in other_im_auth:
+                    return False
+                decoded_token = JWT().get_info(other_im_auth['token'])
+                password = str(decoded_token['iss']) + str(decoded_token['sub'])
+                # check that the token provided is associated with the current owner of the inf.
+                if self_im_auth['password'] != password:
+                    return False
+
             return True
+        else:
+            return False
+
+    def touch(self):
+        """
+        Set last access of the Inf
+        """
+        self.last_access = datetime.now()
+
+    def has_expired(self):
+        """
+        Check if the info of this Inf has expired (for HA mode)
+        """
+        if Config.INF_CACHE_TIME:
+            delay = timedelta(seconds=Config.INF_CACHE_TIME)
+            return (datetime.now() - self.last_access > delay)
         else:
             return False

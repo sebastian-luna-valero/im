@@ -15,9 +15,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-__all__ = ['auth', 'CloudInfo', 'config', 'ConfManager', 'db', 'ganglia', 'HTTPHeaderTransport',
+__all__ = ['auth', 'CloudInfo', 'config', 'ConfManager', 'db',
            'InfrastructureInfo', 'InfrastructureManager', 'recipe', 'request', 'REST', 'retry',
-           'ServiceRequests', 'SSH', 'SSHRetry', 'timedcall', 'UnixHTTPConnection', 'uriparse',
+           'ServiceRequests', 'SSH', 'SSHRetry', 'timedcall', 'UnixHTTPAdapter', 'uriparse',
            'VirtualMachine', 'VMRC', 'xmlobject']
-__version__ = '1.4.7'
+__version__ = '1.7.0'
 __author__ = 'Miguel Caballer'

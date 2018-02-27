@@ -16,7 +16,7 @@
 
 import time
 from IM.VirtualMachine import VirtualMachine
-from CloudConnector import CloudConnector
+from .CloudConnector import CloudConnector
 
 
 class DeployedNodeCloudConnector(CloudConnector):
@@ -51,13 +51,14 @@ class DeployedNodeCloudConnector(CloudConnector):
             now = str(int(time.time() * 100))
             vm = VirtualMachine(inf, now, self.cloud,
                                 requested_radl, requested_radl)
+            inf.add_vm(vm)
             vm.info.systems[0].setValue('provider.type', self.type)
             vm.state = VirtualMachine.RUNNING
             res.append((True, vm))
 
         return res
 
-    def finalize(self, vm, auth_data):
+    def finalize(self, vm, last, auth_data):
         return (True, "")
 
     def stop(self, vm, auth_data):

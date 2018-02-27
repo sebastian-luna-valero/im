@@ -14,8 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import sys
-from IM.connectors import *
+import json
 from IM.uriparse import uriparse
 
 
@@ -38,15 +37,16 @@ class CloudInfo:
         self.path = ""
         """Path to connect to the cloud provider"""
 
-    def getCloudConnector(self):
+    def getCloudConnector(self, inf):
         """
         Returns the appropriate object to contact the cloud provider
         """
         if len(self.type) > 15 or "." in self.type:
             raise Exception("Not valid cloud provider.")
         try:
-            return getattr(sys.modules['IM.connectors.' + self.type], self.type + "CloudConnector")(self)
-        except Exception, ex:
+            module = __import__('IM.connectors.' + self.type, fromlist=[self.type + "CloudConnector"])
+            return getattr(module, self.type + "CloudConnector")(self, inf)
+        except Exception as ex:
             raise Exception("Cloud provider not supported: %s (error: %s)" % (self.type, str(ex)))
 
     def __str__(self):
@@ -72,7 +72,7 @@ class CloudInfo:
         res = []
 
         for i, auth in enumerate(auth_data.auth_list):
-            if auth['type'] not in ['InfrastructureManager', 'VMRC']:
+            if 'type' in auth and auth['type'] not in ['InfrastructureManager', 'VMRC']:
                 cloud_item = CloudInfo()
                 cloud_item.type = auth['type']
                 if 'id' in auth.keys() and auth['id']:
@@ -109,3 +109,13 @@ class CloudInfo:
                 res.append(cloud_item)
 
         return res
+
+    def serialize(self):
+        return json.dumps(self.__dict__)
+
+    @staticmethod
+    def deserialize(str_data):
+        dic = json.loads(str_data)
+        nwecloud = CloudInfo()
+        nwecloud.__dict__.update(dic)
+        return nwecloud

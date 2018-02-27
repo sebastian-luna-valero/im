@@ -24,12 +24,14 @@ This is the list of method names:
 ``CreateInfrastructure``
    :parameter 0: ``radl``: string
    :parameter 1: ``auth``: array of structs
+   :parameter 2: ``async``: (optional, default value False) boolean
    :ok response: [true, ``infId``: integer]
    :fail response: [false, ``error``: string]
 
    Create and configure an infrastructure with the requirements specified in
    the RADL document passed as string. Return the ID associated to the created
-   infrastructure.
+   infrastructure. If ``async`` is set to ``True`` the call will not wait the VMs
+   to be created.
 
 ``GetInfrastructureInfo``
    :parameter 0: ``infId``: integer
@@ -43,11 +45,13 @@ This is the list of method names:
 ``GetInfrastructureContMsg``
    :parameter 0: ``infId``: integer
    :parameter 1: ``auth``: array of structs
+   :parameter 2: ``headeronly``: (optional, default value False) boolean
    :ok response: [true, ``cont_out``: string]
    :fail response: [false, ``error``: string]
 
-   Return the contextualization log associated to the 
-   infrastructure with ID ``infId``. 
+   Return the contextualization log associated to the infrastructure with ID ``infId``. 
+   In case of ``headeronly`` flag is set to True. Only the initial part of the infrastructure
+   contextualization log will be returned (without any VM contextualization log).
    
 ``GetInfrastructureState``
    :parameter 0: ``infId``: integer
@@ -292,3 +296,21 @@ This is the list of method names:
    Take control of the infrastructure serialized in ``strInf`` and return
    the ID associated in the server. See
    :ref:`ExportInfrastructure <ExportInfrastructure-xmlrpc>`.
+
+.. _CreateDiskSnapshot-xmlrpc:
+
+``CreateDiskSnapshot``
+   :parameter 0: ``infId``: integer
+   :parameter 1: ``vmId``: integer
+   :parameter 2: ``diskNum``: integer
+   :parameter 3: ``imageName``: string
+   :parameter 4: ``autoDelete``: boolean   
+   :parameter 5: ``auth``: array of structs
+   :ok response: [true, string]
+   :fail response: [false, ``error``: string]
+
+   Create a snapshot of the specified ``diskNum`` in the VM ``vmId``
+   of the infrastructure with ID ``infId`. The ``autoDelete`` flag
+   specifies that the snapshot will be deleted when the infrastructure is
+   destroyed. It returns the image url of the new created image in IM format
+   (see disk.<diskId>.image.url format in RADL).

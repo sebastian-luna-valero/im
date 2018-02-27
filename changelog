@@ -228,3 +228,144 @@ IM 1.4.7
     * Add im.service file add support to systemd
     * Enable to add a Storage to a running VM in the OCCI and OpenNebula connectors
     * Bugfix in OCCI not waiting the volumes on creation
+
+IM 1.4.8
+    * Bugfix setting step num in case if using contextualizes
+    * Bugfix mapping ips to RADL networks in OpenStack and OpenNebula connectors
+    * Bugfixes in OpenStack connector
+    * Bugfixes in REST API not multithreaded
+    * Bugfixes Error installing IM using pip in Ubuntu 16
+    * Set restrictive permissions in the master VM data dir
+
+IM 1.5.0
+    * Remove DATA_FILE from configuration. Only DB now.
+    * Change DB format. Old 1.4.X data must be updated.
+    	Use the script: db_1_4_to_1_5.py to update the DB format:
+    		* Install new IM 1.5.0 version.
+    		* In case that you were using a DATA_FILE to store the IM data (the default option in old version of IM), define the DATA_DB in the im.cfg file. 
+    		* Execute the script db_1_4_to_1_5.py (https://raw.githubusercontent.com/grycap/im/master/scripts/db_1_4_to_1_5.py).
+    			* In case that you were using a DATA_FILE you have to specify it as the first parameter of the script.
+    			* If you were using a DATA_DB to store your data this parameter is not needed.
+    		* The data will be moved to the new format and old data will be renamed as table inf_list_XXXXXX.
+    * Remove use of insecure Pickle data.
+    * Add Vault support.
+    * Bugfix with sqlite databases.
+    * Fix some Kubenetes connector errors.
+    * Improve Docker connector.
+    * Bugfix killing child processes.
+    * Error in GCE connector in case of multiples nodes.
+    * Add FW creation support in GCE connector.
+    * Move connectors from httplib to requests lib enhancement.
+    * Improve data management in DB to enable HA enhancement.
+    * Move Azure connector to Resource Groups API enhancement.
+    * Change SOAPpy lib to suds.
+    * Add support for OpenStack pool name in OCCI connector.
+
+IM 1.5.1
+    * Fix error configuring VMs with sudo with password.
+    * Improve load data.
+    * Fix Bug in IM in HA mode getting old data.
+    * Merge correctly local /etc/hosts with IM generated data.
+    * Bootstrap ansible master VM with python if it does not have it installed.
+    * Fix Error configuring VMs with sudo with password.
+    * Fix errors in EC2, GCE and OCCI connectors.
+    * Add new timeout config value for SSH access.
+    * Add support for cheroot library.
+
+IM 1.5.2
+    * Improve error messages in case of internal connector errors.
+    * Add Python 3 compatibility.
+    * Improve VM launch paralelism.
+    * Enrich the logging entries + stack trace with the infra id.
+    * Improve OCCI cloud_init data process.
+    * Add VMINFO_JSON conf var to enable the GetVMInfo function return JSON RADL.
+
+IM 1.5.3
+    * Fix errors with python3
+    * Fix error in some SFTP functions in SSH class.
+    * Change default value of REMOTE_CONF_DIR to /var/tmp.
+    * Enable to specify a port range in outports.
+    * Add functions to create VM snapshots.
+    * Fix error in OCCI conn setting public key.
+    * Improve SG management in connectors EC2 and OpenStack.
+    * Add support to OTC.
+    * In case of hybrid infrastructures some connector will not remove all resources.
+    * Select a random pool in case of OpenStack site in OCCI conn.
+    * Detach volumes before removing it in OCCI conn.
+    * Support OpenStack calls with VOMS proxies.
+
+IM 1.5.4
+    * Fix error in contextualization nodes with private keys.
+    * Improve OpenNebula conn with new ver. 5 functions as SGs.
+    * Improve error mesage in case of invalid proxy in OCCI conn.
+    * Fix error in Azure connector creating a VM with two nics.
+    * Fix error in Azure connector creating Storage Account with more than 24 chars.
+
+IM 1.5.5
+    * Fix error getting IP info in OCCI conn.
+    * Enable to reset the add_public_ip_count in the OCCI/OST conns.
+    * Improve Azure instance_type selection.
+    * Improve GCE instance type selection.
+    * Manage DNS records in EC2, Azure and GCE connectors.
+    * Fix error in Azure conn creating a VM with only a public net attached.
+
+IM 1.6.0
+    * Improve getting Public network name in OCCI conn enhancement P2
+    * Improve Ansible contextualization to scale more than 50 VMs
+    * Add Support Custom instance types in Google Conn
+    * Implements Delete SGs in ONE conn only in last VM
+    * Fix error getting contmsg output in case of use colors
+    * Enable to set a limit in the number of parallel ctxt processes
+    * Fix error in SSH module in sftp_put_dir if src dir ends with /
+    * Fix SSL verification error in windows
+    * Enable to add IPs in OCCI conn in AlterVM
+    * Fix error in OpenStack conn trying to assing a floating IP to VM with public IP
+    * Wait SSH access to VMs only in one ctxt task
+    * Create only one storage account per Infrastructure instead of per VM in Azure conn.
+    * Improve save data in VM creation process
+    * Fix Error creating NGS in Azure conn
+    * Return false if VM does not exists in updateVMInfo
+    * Fix error creating NSG in Azure conn if port 22 is set in outports.
+    * Update Ansible roles in Master node in reconfiguration.
+    * Fix error in Azure conn creating subnet.
+    * Fix error in Context. process in basic test in SSH tests.
+
+IM 1.6.1
+    * Fix error in ctxt process in some cases in OpenStack sites.
+    * Fix error launching IM with Ansible 2.4.0.
+
+IM 1.6.2
+    * Enable config_drive option in OpenStack conn.
+    * Improve wait_ssh_access function to test 22 port in case of Dockers.
+    * Do not force install galaxy roles on basic task.
+    * Enable to specify a name of a security group in the RADL.
+    * Fix Ctxt process does not correctly stops in case of failure in one internal step.
+    * Add support for Keystone v3 in OCCI connector.
+    * Add support access RADL properties from Ansible recipes.
+
+IM 1.6.3
+    * Enable to reuse keystone tokens in OCCI conn.
+    * Add support to specify the project in case of OCCI OpenStack sites.
+    * Add the Inf ID in all the related log messages.
+    * Fix error in auth process in old OpenStack sites.
+    * Fix error setting Hostname in Docker, Kubernetes and AzureClassic conns.
+    * Fix error connecting with Synefo OCCI sites.
+    * Fix error deleting VM in OCCI OpenNebula sites.
+
+IM 1.6.4
+    * Store tenant and project in OCCI connector.
+    * Fix error validating keystone token in OCCI conn.
+    * Decrease timeout getting ansible process results.
+    * Enable to get the initial infrastructure contextualization log.
+
+IM 1.6.5
+    * Homogenize Inf ID log message
+    * Fix error cpu.count parameter is ignored in OpenStack conn.
+    * Fix ansible_version is not available in ctxt process.
+
+IM 1.6.6
+    * Fix authorization file format does not allow passwords that contain ";".
+    * Improve error message in ONE conn in case net without leases.
+    * Fix error using disks.free_size in connectors.
+    * Add retries in Azure RG deletion.
+    * Avoid raising error in case that one auth line does not have the type field.

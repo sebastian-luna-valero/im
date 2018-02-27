@@ -33,6 +33,7 @@ Config.MAX_SIMULTANEOUS_LAUNCHES = 2
 
 from IM.VirtualMachine import VirtualMachine
 from IM.InfrastructureManager import InfrastructureManager as IM
+from IM.InfrastructureList import InfrastructureList
 from IM.auth import Authentication
 from radl.radl import RADL, system, deploy, Feature
 from IM.CloudInfo import CloudInfo
@@ -53,9 +54,9 @@ class TestIM(unittest.TestCase):
 
     def setUp(self):
 
+        Config.DATA_DB = "/tmp/inf.dat"
+        InfrastructureList.load_data()
         IM._reinit()
-        # Patch save_data
-        IM.save_data = staticmethod(lambda *args: None)
 
         ch = logging.StreamHandler(sys.stdout)
         log = logging.getLogger('InfrastructureManager')
@@ -147,12 +148,12 @@ class TestIM(unittest.TestCase):
 
         infId = IM.CreateInfrastructure(str(radl), auth0)
 
-        time.sleep(10)
+        time.sleep(15)
 
         state = IM.GetInfrastructureState(infId, auth0)
         self.assertEqual(state["state"], "unconfigured")
 
-        IM.infrastructure_list[infId].ansible_configured = True
+        InfrastructureList.infrastructure_list[infId].ansible_configured = True
 
         IM.Reconfigure(infId, "", auth0)
 

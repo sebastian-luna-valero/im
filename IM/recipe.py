@@ -14,9 +14,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from db import DataBase
+from IM.db import DataBase
 
-from config import Config
+from IM.config import Config
 from radl.radl import FeaturesApp
 
 
@@ -37,7 +37,7 @@ class Recipe:
     def insert(self):
         """ Recipe insert function """
         return Recipe.insertRecipe(self.name, self.version, self.module, self.recipe,
-                                   self.isapp, self.galaxy_module, self.desc, self.requirements)
+                                   self.desc, self.requirements, self.galaxy_module, self.isapp)
 
     @staticmethod
     def insertRecipe(name, version, module, recipe, desc, requirements, galaxy_module=None, isapp=0):
@@ -49,7 +49,7 @@ class Recipe:
                 db = DataBase(Config.RECIPES_DB_FILE)
                 db.connect()
 
-                res = db.execute('''insert into recipes values ("%s", "%s", "%s", "%s", %d, %d, "%s", "%s")''' % (
+                res = db.execute('''insert into recipes values ("%s", "%s", "%s", "%s", %d, "%s", "%s", "%s")''' % (
                     name, version, module, recipe, isapp, galaxy_module, desc, requirements))
                 return res
             except Exception:

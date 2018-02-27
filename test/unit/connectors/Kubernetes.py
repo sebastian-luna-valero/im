@@ -21,7 +21,10 @@ import unittest
 import os
 import logging
 import logging.config
-from StringIO import StringIO
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
 
 sys.path.append(".")
 sys.path.append("..")
@@ -31,6 +34,7 @@ from radl import radl_parse
 from IM.VirtualMachine import VirtualMachine
 from IM.InfrastructureInfo import InfrastructureInfo
 from IM.connectors.Kubernetes import KubernetesCloudConnector
+from IM.uriparse import uriparse
 from mock import patch, MagicMock
 
 
@@ -45,14 +49,12 @@ class TestKubernetesConnector(unittest.TestCase):
     Class to test the IM connectors
     """
 
-    @classmethod
-    def setUpClass(cls):
-        cls.last_op = None, None
-        cls.log = StringIO()
-        ch = logging.StreamHandler(cls.log)
+    def setUp(self):
+        self.log = StringIO()
+        self.handler = logging.StreamHandler(self.log)
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        ch.setFormatter(formatter)
+        self.handler.setFormatter(formatter)
 
         logging.RootLogger.propagate = 0
         logging.root.setLevel(logging.ERROR)
@@ -60,11 +62,15 @@ class TestKubernetesConnector(unittest.TestCase):
         logger = logging.getLogger('CloudConnector')
         logger.setLevel(logging.DEBUG)
         logger.propagate = 0
-        logger.addHandler(ch)
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+        logger.addHandler(self.handler)
 
-    @classmethod
-    def clean_log(cls):
-        cls.log = StringIO()
+    def tearDown(self):
+        self.handler.flush()
+        self.log.close()
+        self.log = StringIO()
+        self.handler.close()
 
     @staticmethod
     def get_kube_cloud():
@@ -73,7 +79,9 @@ class TestKubernetesConnector(unittest.TestCase):
         cloud_info.protocol = "http"
         cloud_info.server = "server.com"
         cloud_info.port = 8080
-        cloud = KubernetesCloudConnector(cloud_info)
+        inf = MagicMock()
+        inf.id = "1"
+        cloud = KubernetesCloudConnector(cloud_info, inf)
         return cloud
 
     def test_10_concrete(self):
@@ -98,42 +106,43 @@ class TestKubernetesConnector(unittest.TestCase):
         concrete = kube_cloud.concreteSystem(radl_system, auth)
         self.assertEqual(len(concrete), 1)
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
-    def get_response(self):
-        method, url = self.__class__.last_op
-
+    def get_response(self, method, url, verify, headers, data):
         resp = MagicMock()
+        parts = uriparse(url)
+        url = parts[2]
 
         if method == "GET":
             if url == "/api/":
-                resp.status = 200
-                resp.read.return_value = '{"versions": "v1"}'
+                resp.status_code = 200
+                resp.text = '{"versions": "v1"}'
             elif url.endswith("/pods/1"):
-                resp.status = 200
-                resp.read.return_value = ('{"metadata": {"namespace":"namespace", "name": "name"}, "status": '
-                                          '{"phase":"Running", "hostIP": "158.42.1.1", "podIP": "10.0.0.1"}, '
-                                          '"spec": {"volumes": [{"persistentVolumeClaim": {"claimName" : "cname"}}]}}')
+                resp.status_code = 200
+                resp.text = ('{"metadata": {"namespace":"namespace", "name": "name"}, "status": '
+                             '{"phase":"Running", "hostIP": "158.42.1.1", "podIP": "10.0.0.1"}, '
+                             '"spec": {"volumes": [{"persistentVolumeClaim": {"claimName" : "cname"}}]}}')
         elif method == "POST":
             if url.endswith("/pods"):
-                resp.status = 201
-                resp.read.return_value = '{"metadata": {"namespace":"namespace", "name": "name"}}'
+                resp.status_code = 201
+                resp.text = '{"metadata": {"namespace":"namespace", "name": "name"}}'
+            if url.endswith("/namespaces"):
+                resp.status_code = 201
         elif method == "DELETE":
             if url.endswith("/pods/1"):
-                resp.status = 200
+                resp.status_code = 200
+            if url.endswith("/namespaces/namespace"):
+                resp.status_code = 200
             elif "persistentvolumeclaims" in url:
-                resp.status = 200
+                resp.status_code = 200
         elif method == "PATCH":
             if url.endswith("/pods/1"):
-                resp.status = 201
+                resp.status_code = 201
 
         return resp
 
-    def request(self, method, url, body=None, headers={}):
-        self.__class__.last_op = method, url
-
-    @patch('httplib.HTTPConnection')
-    def test_20_launch(self, connection):
+    @patch('requests.request')
+    @patch('IM.InfrastructureList.InfrastructureList.save_data')
+    def test_20_launch(self, save_data, requests):
         radl_data = """
             network net1 (outbound = 'yes' and outports = '8080')
             network net2 ()
@@ -157,21 +166,15 @@ class TestKubernetesConnector(unittest.TestCase):
         auth = Authentication([{'id': 'fogbow', 'type': 'Kubernetes', 'host': 'http://server.com:8080'}])
         kube_cloud = self.get_kube_cloud()
 
-        conn = MagicMock()
-        connection.return_value = conn
-
-        conn.request.side_effect = self.request
-        conn.putrequest.side_effect = self.request
-        conn.getresponse.side_effect = self.get_response
+        requests.side_effect = self.get_response
 
         res = kube_cloud.launch(InfrastructureInfo(), radl, radl, 1, auth)
         success, _ = res[0]
         self.assertTrue(success, msg="ERROR: launching a VM.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
-    @patch('httplib.HTTPConnection')
-    def test_30_updateVMInfo(self, connection):
+    @patch('requests.request')
+    def test_30_updateVMInfo(self, requests):
         radl_data = """
             network net (outbound = 'yes')
             system test (
@@ -192,23 +195,18 @@ class TestKubernetesConnector(unittest.TestCase):
         kube_cloud = self.get_kube_cloud()
 
         inf = MagicMock()
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "namespace/1", kube_cloud.cloud, radl, radl, kube_cloud)
+        inf.id = "namespace"
+        vm = VirtualMachine(inf, "1", kube_cloud.cloud, radl, radl, kube_cloud, 1)
 
-        conn = MagicMock()
-        connection.return_value = conn
-
-        conn.request.side_effect = self.request
-        conn.getresponse.side_effect = self.get_response
+        requests.side_effect = self.get_response
 
         success, vm = kube_cloud.updateVMInfo(vm, auth)
 
         self.assertTrue(success, msg="ERROR: updating VM info.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
-    @patch('httplib.HTTPConnection')
-    def test_55_alter(self, connection):
+    @patch('requests.request')
+    def test_55_alter(self, requests):
         radl_data = """
             network net ()
             system test (
@@ -235,42 +233,31 @@ class TestKubernetesConnector(unittest.TestCase):
         kube_cloud = self.get_kube_cloud()
 
         inf = MagicMock()
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "namespace/1", kube_cloud.cloud, radl, radl, kube_cloud)
+        inf.id = "namespace"
+        vm = VirtualMachine(inf, "1", kube_cloud.cloud, radl, radl, kube_cloud, 1)
 
-        conn = MagicMock()
-        connection.return_value = conn
-
-        conn.request.side_effect = self.request
-        conn.putrequest.side_effect = self.request
-        conn.getresponse.side_effect = self.get_response
+        requests.side_effect = self.get_response
 
         success, _ = kube_cloud.alterVM(vm, new_radl, auth)
 
         self.assertTrue(success, msg="ERROR: modifying VM info.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
-    @patch('httplib.HTTPConnection')
-    def test_60_finalize(self, connection):
+    @patch('requests.request')
+    def test_60_finalize(self, requests):
         auth = Authentication([{'id': 'fogbow', 'type': 'Kubernetes', 'host': 'http://server.com:8080'}])
         kube_cloud = self.get_kube_cloud()
 
         inf = MagicMock()
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "namespace/1", kube_cloud.cloud, "", "", kube_cloud)
+        inf.id = "namespace"
+        vm = VirtualMachine(inf, "1", kube_cloud.cloud, "", "", kube_cloud, 1)
 
-        conn = MagicMock()
-        connection.return_value = conn
+        requests.side_effect = self.get_response
 
-        conn.request.side_effect = self.request
-        conn.getresponse.side_effect = self.get_response
-
-        success, _ = kube_cloud.finalize(vm, auth)
+        success, _ = kube_cloud.finalize(vm, True, auth)
 
         self.assertTrue(success, msg="ERROR: finalizing VM info.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
 
 if __name__ == '__main__':

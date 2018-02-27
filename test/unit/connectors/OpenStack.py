@@ -72,7 +72,9 @@ class TestOSTConnector(unittest.TestCase):
         cloud_info.protocol = "https"
         cloud_info.server = "server.com"
         cloud_info.port = 5000
-        one_cloud = OpenStackCloudConnector(cloud_info)
+        inf = MagicMock()
+        inf.id = "1"
+        one_cloud = OpenStackCloudConnector(cloud_info, inf)
         return one_cloud
 
     @patch('IM.connectors.OpenStack.novacli')
@@ -383,7 +385,7 @@ class TestOSTConnector(unittest.TestCase):
 
         client_mock.floating_ips.list.return_value = []
 
-        success, _ = ost_cloud.finalize(vm, auth)
+        success, _ = ost_cloud.finalize(vm, True, auth)
 
         self.assertTrue(success, msg="ERROR: finalizing VM info.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())

@@ -17,10 +17,17 @@
 """ Classes to encapsulate SSH operations using paramiko """
 
 import paramiko
-import scp
+try:
+    import scp
+except:
+    pass
 import os
-import StringIO
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
 from threading import Thread
+from stat import S_ISDIR
 
 
 class TimeOutException(Exception):
@@ -44,18 +51,25 @@ class ThreadSSH(Thread):
         self.command_return = None
         self.client = None
 
+    def close(self):
+        """
+        Close the SSH client connection
+        """
+        if self.client:
+            self.client.close()
+            self.client = None
+
     def run(self):
         if self.command:
             self.client = self.ssh.connect()
 
+            channel = self.client.get_transport().open_session()
             if self.ssh.tty:
-                channel = self.client.get_transport().open_session()
                 channel.get_pty()
-                channel.exec_command(self.command + "\n")
-                stdout = channel.makefile()
-                stderr = channel.makefile_stderr()
-            else:
-                _, stdout, stderr = self.client.exec_command(self.command)
+            channel.exec_command(self.command + "\n")
+            stdout = channel.makefile()
+            stderr = channel.makefile_stderr()
+            exit_status = channel.recv_exit_status()
 
             res_stdout = ""
             for line in stdout:
@@ -67,7 +81,7 @@ class ThreadSSH(Thread):
             if self.ssh.tty:
                 channel.close()
 
-            self.command_return = (res_stdout, res_stderr)
+            self.command_return = (res_stdout, res_stderr, exit_status)
 
 
 class SSH:
@@ -85,7 +99,7 @@ class SSH:
         self.private_key = private_key
         self.private_key_obj = None
         if (private_key is not None and private_key.strip() != ""):
-            private_key_obj = StringIO.StringIO()
+            private_key_obj = StringIO()
             if os.path.isfile(private_key):
                 pkfile = open(private_key)
                 for line in pkfile.readlines():
@@ -152,7 +166,7 @@ class SSH:
             return True
         except paramiko.AuthenticationException:
             raise AuthenticationException("Authentication Error!!")
-        except paramiko.SSHException, e:
+        except paramiko.SSHException as e:
             if str(e) == "No authentication methods available":
                 raise AuthenticationException("Authentication Error!!")
             return False
@@ -190,14 +204,6 @@ class SSH:
         channel.close()
         client.close()
         return (res_stdout, res_stderr, exit_status)
-
-    def _get_sftp(self):
-        """ Gets a Transport and a SFTPClient to perform sftp operations
-        """
-        client = self.connect()
-        transport = client.get_transport()
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        return transport, sftp
 
     def sftp_get(self, src, dest):
         """ Gets a file from the remote server
@@ -285,6 +291,62 @@ class SSH:
         sftp.close()
         transport.close()
 
+    def sftp_get_dir(self, src, dest):
+        """ Gets recursively a directory from the remote server
+
+            Arguments:
+            - src: Source directory in the remote server to copy.
+            - dest: Local destination path.
+        """
+        client = self.connect()
+        transport = client.get_transport()
+        sftp = paramiko.SFTPClient.from_transport(transport)
+
+        files = self.sftp_walk(src, None, sftp)
+
+        for filename in files:
+            dirname = os.path.dirname(filename)
+            if not os.path.exists(dirname):
+                os.mkdir(dirname)
+            full_dest = filename.replace(src, dest)
+            sftp.get(filename, full_dest)
+
+        sftp.close()
+        transport.close()
+
+    def sftp_walk(self, src, files=None, sftp=None):
+        """ Gets recursively the list of items in a directory from the remote server
+
+            Arguments:
+            - src: Source directory in the remote server to copy.
+        """
+        close = False
+        if not sftp:
+            client = self.connect()
+            transport = client.get_transport()
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            close = True
+
+        folders = []
+        if not files:
+            files = []
+        for f in sftp.listdir_attr(src):
+            if S_ISDIR(f.st_mode):
+                folder = os.path.join(src, f.filename)
+                folders.append(folder)
+            else:
+                filename = os.path.join(src, f.filename)
+                files.append(filename)
+
+        for folder in folders:
+            self.sftp_walk(folder, files, sftp)
+
+        if close:
+            sftp.close()
+            transport.close()
+
+        return files
+
     def sftp_put_dir(self, src, dest):
         """ Puts recursively the contents of a directory to the remote server
 
@@ -293,6 +355,8 @@ class SSH:
             - dest: Destination path in the remote server.
         """
         if os.path.isdir(src):
+            if src.endswith("/"):
+                src = src[:-1]
             client = self.connect()
             transport = client.get_transport()
             try:
@@ -314,9 +378,7 @@ class SSH:
                         except:
                             sftp.mkdir(dest_path)
                     else:
-                        out, err, code = self.execute(
-                            "mkdir -p %s" % dest_path)
-                        print out, err
+                        self.execute("mkdir -p %s" % dest_path)
                 for filename in filenames:
                     src_file = os.path.join(dirname, filename)
                     dest_file = os.path.join(dest, dirname[len(src) + 1:],
@@ -333,7 +395,9 @@ class SSH:
             - content: The string to put into the remote file.
             - dest: Destination path in the remote server.
         """
-        transport, sftp = self._get_sftp()
+        client = self.connect()
+        transport = client.get_transport()
+        sftp = paramiko.SFTPClient.from_transport(transport)
         dest_file = sftp.file(dest, "w")
         dest_file.write(content)
         dest_file.close()
@@ -349,7 +413,9 @@ class SSH:
             Returns: True if the directory is created or False if it exists.
         """
         try:
-            transport, sftp = self._get_sftp()
+            client = self.connect()
+            transport = client.get_transport()
+            sftp = paramiko.SFTPClient.from_transport(transport)
             sftp_avail = transport.active
         except:
             sftp_avail = False
@@ -381,7 +447,9 @@ class SSH:
             Returns: A list with the contents of the directory
                      (see paramiko.SFTPClient.listdir)
         """
-        transport, sftp = self._get_sftp()
+        client = self.connect()
+        transport = client.get_transport()
+        sftp = paramiko.SFTPClient.from_transport(transport)
         res = sftp.listdir(directory)
         sftp.close()
         transport.close()
@@ -397,7 +465,9 @@ class SSH:
             Returns: A list containing SFTPAttributes object
                      (see paramiko.SFTPClient.listdir_attr)
         """
-        transport, sftp = self._get_sftp()
+        client = self.connect()
+        transport = client.get_transport()
+        sftp = paramiko.SFTPClient.from_transport(transport)
         res = sftp.listdir_attr(directory)
         sftp.close()
         transport.close()
@@ -409,7 +479,9 @@ class SSH:
             Returns: The current working directory.
         """
         try:
-            transport, sftp = self._get_sftp()
+            client = self.connect()
+            transport = client.get_transport()
+            sftp = paramiko.SFTPClient.from_transport(transport)
             sftp_avail = transport.active
         except:
             sftp_avail = False
@@ -447,14 +519,14 @@ class SSH:
             self.thread.join(timeout)
 
             if self.thread.isAlive():
-                self.thread.client.close()
+                self.thread.close()
                 self.thread.join(2)
                 if kill_command:
                     self.execute(kill_command)
                 self.thread = None
             else:
                 res = self.thread.command_return
-                self.thread.client.close()
+                self.thread.close()
                 self.thread = None
                 return res
 
@@ -469,7 +541,9 @@ class SSH:
             Returns: True if the file is deleted or False if it exists.
         """
         try:
-            transport, sftp = self._get_sftp()
+            client = self.connect()
+            transport = client.get_transport()
+            sftp = paramiko.SFTPClient.from_transport(transport)
             sftp_avail = transport.active
         except:
             sftp_avail = False
@@ -496,7 +570,9 @@ class SSH:
             - mode: Int with the new permissions
         """
         try:
-            transport, sftp = self._get_sftp()
+            client = self.connect()
+            transport = client.get_transport()
+            sftp = paramiko.SFTPClient.from_transport(transport)
             sftp_avail = transport.active
         except:
             sftp_avail = False

@@ -173,7 +173,12 @@ The supported features are:
 	* 8899-8899,22-22
 	* 8899/tcp,22/udp
 	* 8899,22
+	* 9000:9100/tcp
+	* 9000:9100
 
+   The usage of ``-`` means port mapping the first port (remote) will be opened and
+   redirected the the second port (local). 
+   The usage of ``:`` means port range.  
    The default value is ``''``.
    
 ``provider_id = <string>``
@@ -258,8 +263,10 @@ machine.  The supported features are:
    * ``ost://<server>:<port>/<ami-id>``, for OpenStack;
    * ``aws://<region>/<ami-id>``, for Amazon Web Service;
    * ``gce://<region>/<image-id>``, for Google Cloud;
-   * ``azr://<image-id>``, for Microsoft Azure; and
+   * ``azr://<image-id>``, for Microsoft Azure Clasic; and
+   * ``azr://<publisher>/<offer>/<sku>/<version>``, for Microsoft Azure; and
    * ``<fedcloud_endpoint_url>/<image_id>``, for FedCloud OCCI connector.
+   * ``appdb://<site_name>/<apc_name>?<vo_name>``, for FedCloud OCCI connector using AppDB info (from ver. 1.6.0).
    * ``docker://<docker_image>``, for Docker images.
    * ``fbw://<fogbow_image>``, for FogBow images.
 
@@ -277,7 +284,8 @@ machine.  The supported features are:
    It specifies the device where the disk will be located in the system
    (hdb, hdc, etc.). Depending on the Cloud provider the meaning of this
    field may change. In Docker and Kubernetes connectors the device
-   refers to a path to create a bind in the container.
+   refers to a path to create a bind in the container, if it starts with
+   character ``/`` or the name of a volume otherwise.
    
 ``disk.<diskId>.mount_path = <string>``
    Set the mount point, if it is disk with no source set.
@@ -289,7 +297,8 @@ machine.  The supported features are:
    Set the mount point, if it is disk with no source set.
    It specifies the type of the filesystem of this disk. If specified
    the contextualization agent will try to format and mount this disk
-   in the path specified in ``mount_path`` field.
+   in the path specified in ``mount_path`` field. In case of Docker 
+   the fstype refers to the driver to use in case of using a volume.
 
 ``disk.<diskId>.size = <positive integer value>B|K|M|G``
    Set the size of the disk, if it is a disk with no source set.
@@ -408,8 +417,17 @@ the virtual machine.
 ``IM_NODE_FQDN``
    Complete FQDN of the virtual machine.
 
+``IM_NODE_PRIVATE_IP``
+   Private IP of the virtual machine. In case that the VM has more that one the first one will be returned.
+
+``IM_NODE_PUBLIC_IP``
+   Public IP of the virtual machine. In case that the VM has more that one the first one will be returned.
+
 ``IM_NODE_NUM``
    The value of the substitution ``#N#`` in the virtual machine.
+
+``IM_NODE_CLOUD_TYPE``
+   Cloud type where the VM has been deployed.
 
 ``IM_MASTER_HOSTNAME``
    Hostname (without the domain) of the virtual machine doing the *master*
@@ -432,6 +450,22 @@ the virtual machine.
    
 ``IM_NODE_NET_<iface num>_IP``
    The IP assigned to the network interface num ``iface num``.
+
+``IM_INFRASTRUCTURE_ID``
+   The identifier asigned by the IM to the infrastrucure this VM belongs to.
+
+``IM_INFRASTRUCTURE_RADL``
+   The RADL in JSON format: networks, systems and deploys. (from ver. 1.6.2). It enables to use
+   RADL values in Ansible recipes. The ``.`` in the properties are replaced by ``_``
+   (e.g. ``net.interface.0.dns_name`` is replaced by ``net_interface_0_dns_name``).
+   It can be used in combination with the `Ansible json_query filter <http://docs.ansible.com/ansible/latest/playbooks_filters.html#json-query-filter>`_
+   to extract values as shown in this example::
+   
+      NODENAME: '{{IM_INFRASTRUCTURE_RADL|json_query("[?id == ''front''].net_interface_0_dns_name|[0]")}}'
+
+   Ansible json_query filter is built upon `jmespath <http://jmespath.org/>`_ so this library must be installed
+   on the managed node that uses this function. IM installs it on the master VM but no in the rest of VMs. If you
+   want to use it on other VMs you have to prepare them installing jmespath in a previous step.
 
 
 Including roles of Ansible Galaxy

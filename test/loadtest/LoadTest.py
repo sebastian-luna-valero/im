@@ -18,12 +18,15 @@
 
 from multiprocessing import Process
 import unittest
-import xmlrpclib
 import time
 import sys
 import os
 import random
 import datetime
+try:
+    from xmlrpclib import ServerProxy
+except ImportError:
+    from xmlrpc.client import ServerProxy
 
 sys.path.append("..")
 sys.path.append(".")
@@ -52,8 +55,7 @@ class LoadTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.server = xmlrpclib.ServerProxy(
-            "http://" + HOSTNAME + ":" + str(TEST_PORT), allow_none=True)
+        cls.server = ServerProxy("http://" + HOSTNAME + ":" + str(TEST_PORT), allow_none=True)
         cls.auth_data = Authentication.read_auth_data(AUTH_FILE)
         cls.inf_id = 0
 
@@ -70,7 +72,7 @@ class LoadTest(unittest.TestCase):
         delay = random.uniform(mint, maxt)
         time.sleep(delay)
 
-    def wait_inf_state(self, states, timeout, incorrect_states=[], vm_ids=None):
+    def wait_inf_state(self, states, timeout, incorrect_states=None, vm_ids=None):
         """
         Wait for an infrastructure to have a specific state
         """
@@ -85,7 +87,8 @@ class LoadTest(unittest.TestCase):
                 success, msg="ERROR calling the GetInfrastructureInfo function:" + str(vm_ids))
 
         err_states = [VirtualMachine.FAILED, VirtualMachine.OFF]
-        err_states.extend(incorrect_states)
+        if incorrect_states:
+            err_states.extend(incorrect_states)
 
         wait = 0
         all_ok = False
@@ -177,7 +180,7 @@ class LoadTest(unittest.TestCase):
             success, msg="ERROR calling GetInfrastructureRADL: " + str(res))
         try:
             radl_parse.parse_radl(res)
-        except Exception, ex:
+        except Exception as ex:
             self.assertTrue(
                 False, msg="ERROR parsing the RADL returned by GetInfrastructureRADL: " + str(ex))
         self.wait()
@@ -231,7 +234,7 @@ class LoadTest(unittest.TestCase):
         self.assertTrue(success, msg="ERROR calling GetVMInfo: " + str(info))
         try:
             radl_parse.parse_radl(info)
-        except Exception, ex:
+        except Exception as ex:
             self.assertTrue(
                 False, msg="ERROR parsing the RADL returned by GetVMInfo: " + str(ex))
         self.wait()
@@ -341,7 +344,7 @@ class LoadTest(unittest.TestCase):
         total = 0.0
         for time in self.response_times:
             total += time
-        print "Mean Time: %.4f" % (total / len(self.response_times))
+        print("Mean Time: %.4f" % (total / len(self.response_times)))
 
     def test_50_destroy(self):
         """
@@ -363,10 +366,10 @@ class LoadTest(unittest.TestCase):
 
 def test(num_client):
     now = datetime.datetime.now()
-    print now, ": Launch client num: %d" % num_client
+    print(now, ": Launch client num: %d" % num_client)
     unittest.main()
     now = datetime.datetime.now()
-    print now, ": End client num: %d" % num_client
+    print(now, ": End client num: %d" % num_client)
 
 if __name__ == '__main__':
     MAX_THREADS = 1
@@ -391,7 +394,7 @@ if __name__ == '__main__':
         num_treads = min(MAX_CLIENTS - cont, MAX_THREADS)
         processes = []
         now = datetime.datetime.now()
-        print now, ": Launch %d threads. " % num_treads
+        print(now, ": Launch %d threads. " % num_treads)
         for num in range(num_treads):
             p = Process(target=test, args=(cont + num,))
             p.start()
@@ -401,4 +404,4 @@ if __name__ == '__main__':
             p.join()
         cont += num_treads
         now = datetime.datetime.now()
-        print now, ": End %d threads. " % num_treads
+        print(now, ": End %d threads. " % num_treads)

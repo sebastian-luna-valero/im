@@ -21,7 +21,10 @@ import unittest
 import os
 import logging
 import logging.config
-from StringIO import StringIO
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
 
 sys.path.append(".")
 sys.path.append("..")
@@ -31,7 +34,7 @@ from radl import radl_parse
 from IM.VirtualMachine import VirtualMachine
 from IM.InfrastructureInfo import InfrastructureInfo
 from IM.connectors.EC2 import EC2CloudConnector
-from mock import patch, MagicMock, mock_open
+from mock import patch, MagicMock, call
 
 
 def read_file_as_string(file_name):
@@ -45,13 +48,12 @@ class TestEC2Connector(unittest.TestCase):
     Class to test the IM connectors
     """
 
-    @classmethod
-    def setUpClass(cls):
-        cls.log = StringIO()
-        ch = logging.StreamHandler(cls.log)
+    def setUp(self):
+        self.log = StringIO()
+        self.handler = logging.StreamHandler(self.log)
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        ch.setFormatter(formatter)
+        self.handler.setFormatter(formatter)
 
         logging.RootLogger.propagate = 0
         logging.root.setLevel(logging.ERROR)
@@ -59,17 +61,23 @@ class TestEC2Connector(unittest.TestCase):
         logger = logging.getLogger('CloudConnector')
         logger.setLevel(logging.DEBUG)
         logger.propagate = 0
-        logger.addHandler(ch)
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+        logger.addHandler(self.handler)
 
-    @classmethod
-    def clean_log(cls):
-        cls.log = StringIO()
+    def tearDown(self):
+        self.handler.flush()
+        self.log.close()
+        self.log = StringIO()
+        self.handler.close()
 
     @staticmethod
     def get_ec2_cloud():
         cloud_info = CloudInfo()
         cloud_info.type = "EC2"
-        cloud = EC2CloudConnector(cloud_info)
+        inf = MagicMock()
+        inf.id = "1"
+        cloud = EC2CloudConnector(cloud_info, inf)
         return cloud
 
     def test_10_concrete(self):
@@ -94,14 +102,25 @@ class TestEC2Connector(unittest.TestCase):
         concrete = ec2_cloud.concreteSystem(radl_system, auth)
         self.assertEqual(len(concrete), 1)
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
+
+    def create_key_pair(self, keypair_name):
+        keypair = MagicMock()
+        keypair.name = keypair_name
+
+        def save_key_pair(keypair_dir):
+            with open(keypair_dir + "/" + keypair_name + ".pem", 'a') as f:
+                f.write("key")
+
+        keypair.save.side_effect = save_key_pair
+        return keypair
 
     @patch('boto.ec2.get_region')
     @patch('boto.vpc.VPCConnection')
     @patch('boto.ec2.blockdevicemapping.BlockDeviceMapping')
-    def test_20_launch(self, blockdevicemapping, VPCConnection, get_region):
+    @patch('IM.InfrastructureList.InfrastructureList.save_data')
+    def test_20_launch(self, save_data, blockdevicemapping, VPCConnection, get_region):
         radl_data = """
-            network net1 (outbound = 'yes' and outports='8080')
+            network net1 (outbound = 'yes' and outports='8080,9000:9100' and sg_name = 'sgname')
             network net2 ()
             system test (
             cpu.arch='x86_64' and
@@ -113,8 +132,6 @@ class TestEC2Connector(unittest.TestCase):
             disk.0.os.name = 'linux' and
             disk.0.image.url = 'aws://us-east-one/ami-id' and
             disk.0.os.credentials.username = 'user' and
-            disk.0.os.credentials.private_key = 'private' and
-            disk.0.os.credentials.public_key = 'public' and
             disk.1.size=1GB and
             disk.1.device='hdb' and
             disk.1.mount_path='/mnt/path'
@@ -160,18 +177,51 @@ class TestEC2Connector(unittest.TestCase):
 
         conn.get_all_security_groups.return_value = []
 
+        conn.create_key_pair.side_effect = self.create_key_pair
+
         blockdevicemapping.return_value = {'device': ''}
 
         res = ec2_cloud.launch(InfrastructureInfo(), radl, radl, 1, auth)
         success, _ = res[0]
         self.assertTrue(success, msg="ERROR: launching a VM.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
+
+        # Check the case that we do not use VPC
+        radl_data = """
+            network net1 (outbound = 'yes' and outports='8080')
+            network net2 ()
+            system test (
+            cpu.arch='x86_64' and
+            cpu.count>=1 and
+            memory.size>=1g and
+            net_interface.0.connection = 'net1' and
+            net_interface.0.dns_name = 'test' and
+            net_interface.1.connection = 'net2' and
+            disk.0.os.name = 'linux' and
+            disk.0.image.url = 'aws://us-east-one/ami-id' and
+            disk.0.os.credentials.username = 'user' and
+            #disk.0.os.credentials.private_key = 'private' and
+            #disk.0.os.credentials.public_key = 'public' and
+            disk.1.size=1GB and
+            disk.1.device='hdb' and
+            disk.1.mount_path='/mnt/path'
+            )"""
+        radl = radl_parse.parse_radl(radl_data)
+        conn.get_all_vpcs.return_value = []
+        res = ec2_cloud.launch(InfrastructureInfo(), radl, radl, 1, auth)
+        success, _ = res[0]
+        print(self.log.getvalue())
+        self.assertTrue(success, msg="ERROR: launching a VM.")
+        # check the instance_type selected is correct
+        self.assertEquals(image.run.call_args_list[1][1]["instance_type"], "m1.small")
+
+        self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
 
     @patch('boto.ec2.get_region')
     @patch('boto.vpc.VPCConnection')
     @patch('boto.ec2.blockdevicemapping.BlockDeviceMapping')
-    def test_25_launch_spot(self, blockdevicemapping, VPCConnection, get_region):
+    @patch('IM.InfrastructureList.InfrastructureList.save_data')
+    def test_25_launch_spot(self, save_data, blockdevicemapping, VPCConnection, get_region):
         radl_data = """
             network net1 (outbound = 'yes' and provider_id = 'vpc-id.subnet-id')
             network net2 ()
@@ -242,10 +292,11 @@ class TestEC2Connector(unittest.TestCase):
         success, _ = res[0]
         self.assertTrue(success, msg="ERROR: launching a VM.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
     @patch('IM.connectors.EC2.EC2CloudConnector.get_connection')
-    def test_30_updateVMInfo(self, get_connection):
+    @patch('boto.route53.connect_to_region')
+    @patch('boto.route53.record.ResourceRecordSets')
+    def test_30_updateVMInfo(self, record_sets, connect_to_region, get_connection):
         radl_data = """
             network net (outbound = 'yes')
             system test (
@@ -254,7 +305,7 @@ class TestEC2Connector(unittest.TestCase):
             memory.size=512m and
             net_interface.0.connection = 'net' and
             net_interface.0.ip = '158.42.1.1' and
-            net_interface.0.dns_name = 'test' and
+            net_interface.0.dns_name = 'test.domain.com' and
             disk.0.os.name = 'linux' and
             disk.0.image.url = 'one://server.com/1' and
             disk.0.os.credentials.username = 'user' and
@@ -270,8 +321,7 @@ class TestEC2Connector(unittest.TestCase):
         ec2_cloud = self.get_ec2_cloud()
 
         inf = MagicMock()
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "us-east-1;id-1", ec2_cloud.cloud, radl, radl, ec2_cloud)
+        vm = VirtualMachine(inf, "us-east-1;id-1", ec2_cloud.cloud, radl, radl, ec2_cloud, 1)
 
         conn = MagicMock()
         get_connection.return_value = conn
@@ -301,11 +351,26 @@ class TestEC2Connector(unittest.TestCase):
         conn.create_volume.return_value = volume
         conn.attach_volume.return_value = True
 
+        dns_conn = MagicMock()
+        connect_to_region.return_value = dns_conn
+
+        dns_conn.get_zone.return_value = None
+        zone = MagicMock()
+        zone.get_a.return_value = None
+        dns_conn.create_zone.return_value = zone
+        changes = MagicMock()
+        record_sets.return_value = changes
+        change = MagicMock()
+        changes.add_change.return_value = change
+
         success, vm = ec2_cloud.updateVMInfo(vm, auth)
 
         self.assertTrue(success, msg="ERROR: updating VM info.")
+        self.assertEquals(dns_conn.create_zone.call_count, 1)
+        self.assertEquals(dns_conn.create_zone.call_args_list[0][0][0], "domain.com.")
+        self.assertEquals(changes.add_change.call_args_list, [call('CREATE', 'test.domain.com.', 'A')])
+        self.assertEquals(change.add_value.call_args_list, [call('158.42.1.1')])
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
     @patch('IM.connectors.EC2.EC2CloudConnector.get_connection')
     def test_30_updateVMInfo_spot(self, get_connection):
@@ -332,8 +397,7 @@ class TestEC2Connector(unittest.TestCase):
         ec2_cloud = self.get_ec2_cloud()
 
         inf = MagicMock()
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "us-east-1;sid-1", ec2_cloud.cloud, radl, radl, ec2_cloud)
+        vm = VirtualMachine(inf, "us-east-1;sid-1", ec2_cloud.cloud, radl, radl, ec2_cloud, 1)
 
         conn = MagicMock()
         get_connection.return_value = conn
@@ -370,7 +434,6 @@ class TestEC2Connector(unittest.TestCase):
 
         self.assertTrue(success, msg="ERROR: updating VM info.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
     @patch('IM.connectors.EC2.EC2CloudConnector.get_connection')
     def test_40_stop(self, get_connection):
@@ -378,8 +441,7 @@ class TestEC2Connector(unittest.TestCase):
         ec2_cloud = self.get_ec2_cloud()
 
         inf = MagicMock()
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "us-east-1;id-1", ec2_cloud.cloud, "", "", ec2_cloud)
+        vm = VirtualMachine(inf, "us-east-1;id-1", ec2_cloud.cloud, "", "", ec2_cloud, 1)
 
         conn = MagicMock()
         get_connection.return_value = conn
@@ -395,7 +457,6 @@ class TestEC2Connector(unittest.TestCase):
 
         self.assertTrue(success, msg="ERROR: stopping VM info.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
     @patch('IM.connectors.EC2.EC2CloudConnector.get_connection')
     def test_50_start(self, get_connection):
@@ -403,8 +464,7 @@ class TestEC2Connector(unittest.TestCase):
         ec2_cloud = self.get_ec2_cloud()
 
         inf = MagicMock()
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "us-east-1;id-1", ec2_cloud.cloud, "", "", ec2_cloud)
+        vm = VirtualMachine(inf, "us-east-1;id-1", ec2_cloud.cloud, "", "", ec2_cloud, 1)
 
         conn = MagicMock()
         get_connection.return_value = conn
@@ -420,7 +480,6 @@ class TestEC2Connector(unittest.TestCase):
 
         self.assertTrue(success, msg="ERROR: stopping VM info.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
     @patch('IM.connectors.EC2.EC2CloudConnector.get_connection')
     def test_55_alter(self, get_connection):
@@ -450,8 +509,7 @@ class TestEC2Connector(unittest.TestCase):
         ec2_cloud = self.get_ec2_cloud()
 
         inf = MagicMock()
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "us-east-1;sid-1", ec2_cloud.cloud, radl, radl, ec2_cloud)
+        vm = VirtualMachine(inf, "us-east-1;sid-1", ec2_cloud.cloud, radl, radl, ec2_cloud, 1)
 
         conn = MagicMock()
         get_connection.return_value = conn
@@ -468,11 +526,12 @@ class TestEC2Connector(unittest.TestCase):
 
         self.assertTrue(success, msg="ERROR: modifying VM info.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
 
     @patch('IM.connectors.EC2.EC2CloudConnector.get_connection')
     @patch('time.sleep')
-    def test_60_finalize(self, sleep, get_connection):
+    @patch('boto.route53.connect_to_region')
+    @patch('boto.route53.record.ResourceRecordSets')
+    def test_60_finalize(self, record_sets, connect_to_region, sleep, get_connection):
         radl_data = """
             network net (outbound = 'yes')
             system test (
@@ -481,7 +540,7 @@ class TestEC2Connector(unittest.TestCase):
             memory.size=512m and
             net_interface.0.connection = 'net' and
             net_interface.0.ip = '158.42.1.1' and
-            net_interface.0.dns_name = 'test' and
+            net_interface.0.dns_name = 'test.domain.com' and
             disk.0.os.name = 'linux' and
             disk.0.image.url = 'one://server.com/1' and
             disk.0.os.credentials.username = 'user' and
@@ -497,8 +556,7 @@ class TestEC2Connector(unittest.TestCase):
 
         inf = MagicMock()
         inf.id = "1"
-        inf.get_next_vm_id.return_value = 1
-        vm = VirtualMachine(inf, "us-east-1;id-1", ec2_cloud.cloud, radl, radl, ec2_cloud)
+        vm = VirtualMachine(inf, "us-east-1;id-1", ec2_cloud.cloud, radl, radl, ec2_cloud, 1)
         vm.keypair_name = "key"
 
         conn = MagicMock()
@@ -537,11 +595,71 @@ class TestEC2Connector(unittest.TestCase):
         sg.delete.return_value = True
         conn.get_all_security_groups.return_value = [sg]
 
-        success, _ = ec2_cloud.finalize(vm, auth)
+        dns_conn = MagicMock()
+        connect_to_region.return_value = dns_conn
+
+        zone = MagicMock()
+        record = MagicMock()
+        zone.id = "zid"
+        zone.get_a.return_value = record
+        dns_conn.get_all_rrsets.return_value = []
+        dns_conn.get_zone.return_value = zone
+        changes = MagicMock()
+        record_sets.return_value = changes
+        change = MagicMock()
+        changes.add_change.return_value = change
+
+        success, _ = ec2_cloud.finalize(vm, True, auth)
 
         self.assertTrue(success, msg="ERROR: finalizing VM info.")
+        self.assertEquals(dns_conn.delete_hosted_zone.call_count, 1)
+        self.assertEquals(dns_conn.delete_hosted_zone.call_args_list[0][0][0], zone.id)
+        self.assertEquals(changes.add_change.call_args_list, [call('DELETE', 'test.domain.com.', 'A')])
+        self.assertEquals(change.add_value.call_args_list, [call('158.42.1.1')])
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
-        self.clean_log()
+
+    @patch('IM.connectors.EC2.EC2CloudConnector.get_connection')
+    @patch('time.sleep')
+    def test_70_create_snapshot(self, sleep, get_connection):
+        auth = Authentication([{'id': 'ec2', 'type': 'EC2', 'username': 'user', 'password': 'pass'}])
+        ec2_cloud = self.get_ec2_cloud()
+
+        inf = MagicMock()
+        vm = VirtualMachine(inf, "region;id1", ec2_cloud.cloud, "", "", ec2_cloud, 1)
+
+        conn = MagicMock()
+        get_connection.return_value = conn
+
+        reservation = MagicMock()
+        instance = MagicMock()
+        instance.create_image.return_value = "image-ami"
+        reservation.instances = [instance]
+        conn.get_all_instances.return_value = [reservation]
+
+        success, new_image = ec2_cloud.create_snapshot(vm, 0, "image_name", True, auth)
+
+        self.assertTrue(success, msg="ERROR: creating snapshot: %s" % new_image)
+        self.assertEqual(new_image, "aws://region/image-ami")
+        self.assertEqual(instance.create_image.call_args_list, [call('image_name',
+                                                                     description='AMI automatically generated by IM',
+                                                                     no_reboot=True)])
+        self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
+
+    @patch('IM.connectors.EC2.EC2CloudConnector.get_connection')
+    @patch('time.sleep')
+    def test_80_delete_image(self, sleep, get_connection):
+        auth = Authentication([{'id': 'ec2', 'type': 'EC2', 'username': 'user', 'password': 'pass'}])
+        ec2_cloud = self.get_ec2_cloud()
+
+        conn = MagicMock()
+        get_connection.return_value = conn
+        conn.deregister_image.return_value = True
+
+        success, msg = ec2_cloud.delete_image('aws://region/image-ami', auth)
+
+        self.assertTrue(success, msg="ERROR: deleting image. %s" % msg)
+        self.assertEqual(conn.deregister_image.call_args_list, [call('image-ami', delete_snapshot=True)])
+        self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
 
 
 if __name__ == '__main__':

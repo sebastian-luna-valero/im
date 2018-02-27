@@ -16,17 +16,21 @@
 
 import time
 import os
-
+import tempfile
 from netaddr import IPNetwork, IPAddress
+
+try:
+    from novaclient import client as novacli
+    from novaclient.exceptions import NotFound
+    from neutronclient.v2_0 import client as neutroncli
+except Exception as ex:
+    print("WARN: libcloud library not correctly installed. OpenStackCloudConnector will not work!.")
+    print(ex)
+
 from IM.config import Config
 from IM.uriparse import uriparse
 from IM.VirtualMachine import VirtualMachine
-from CloudConnector import CloudConnector
-
-from novaclient import client as novacli
-from neutronclient.v2_0 import client as neutroncli
-from novaclient.exceptions import NotFound
-
+from .CloudConnector import CloudConnector
 from radl.radl import Feature
 
 
@@ -39,6 +43,10 @@ class OpenStackCloudConnector(CloudConnector):
     """str with the name of the provider."""
     DEFAULT_USER = 'cloudadm'
     """ default user to SSH access the VM """
+    MAX_ADD_IP_COUNT = 5
+    """ Max number of retries to get a public IP """
+    CONFIG_DRIVE = False
+    """ Enable config drive """
 
     VM_STATE_MAP = {
         'BUILDING': VirtualMachine.PENDING,
@@ -54,11 +62,11 @@ class OpenStackCloudConnector(CloudConnector):
         'SHELVED': VirtualMachine.STOPPED
     }
 
-    def __init__(self, cloud_info):
+    def __init__(self, cloud_info, inf):
         self.auth = None
         self.novaclient = None
         self.netronclient = None
-        CloudConnector.__init__(self, cloud_info)
+        CloudConnector.__init__(self, cloud_info, inf)
 
     def get_client(self, auth_data, type="nova"):
         """
@@ -84,23 +92,35 @@ class OpenStackCloudConnector(CloudConnector):
             if not protocol:
                 protocol = "http"
 
+            parameters = {"auth_version": '2.0_password',
+                          "auth_url": protocol + "://" + self.cloud.server + ":" + str(self.cloud.port),
+                          "auth_token": None,
+                          "service_type": None,
+                          "service_name": None,
+                          "service_region": 'RegionOne',
+                          "base_url": None,
+                          "domain": None}
+
             if 'username' in auth and 'password' in auth and 'tenant' in auth:
-                parameters = {"auth_url": protocol + "://" + self.cloud.server + ":" + str(self.cloud.port) + "/v2.0",
-                              "auth_token": None,
-                              "service_type": None,
-                              "service_name": None,
-                              "service_region": 'RegionOne',
-                              "base_url": None,
-                              "domain": None}
+                for param in parameters:
+                    if param in auth:
+                        parameters[param] = auth[param]
+            elif 'proxy' in auth:
+                (fproxy, proxy_filename) = tempfile.mkstemp()
+                os.write(fproxy, auth['proxy'].encode())
+                os.close(fproxy)
+                auth['username'] = ''
+                auth['password'] = proxy_filename
+                parameters["auth_version"] = '2.0_voms'
 
                 for param in parameters:
                     if param in auth:
                         parameters[param] = auth[param]
             else:
-                self.logger.error(
-                    "No correct auth data has been specified to OpenStack: username, password and tenant")
+                self.log_error(
+                    "No correct auth data has been specified to OpenStack: username, password and tenant or proxy")
                 raise Exception(
-                    "No correct auth data has been specified to OpenStack: username, password and tenant")
+                    "No correct auth data has been specified to OpenStack: username, password and tenant or proxy")
 
             version = "2.0"
             nova = novacli.Client(version,
@@ -129,7 +149,7 @@ class OpenStackCloudConnector(CloudConnector):
         elif type == "neutron":
             return self.netronclient
         else:
-            self.logger.error("Invalid type: %s" % type)
+            self.log_error("Invalid type: %s" % type)
             return None
 
     def get_instance_type(self, flavors, radl):
@@ -154,21 +174,17 @@ class OpenStackCloudConnector(CloudConnector):
             cpu = radl.getValue('cpu.count')
             cpu_op = radl.getFeature('cpu.count').getLogOperator()
 
-        res = None
+        # get the node size with the lowest vcpus and memory
+        flavors.sort(key=lambda x: (x.vcpus, x.ram))
         for flavor in flavors:
-            # get the node size with the lowest price and memory (in the case
-            # of the price is not set)
-            if res is None or (flavor.ram <= res.ram):
-                str_compare = "flavor.ram " + memory_op + " memory"
-                str_compare += " and flavor.vcpus " + cpu_op + " cpu"
-                if eval(str_compare):
-                    if not instance_type_name or flavor.name == instance_type_name:
-                        res = flavor
+            str_compare = "flavor.ram " + memory_op + " memory"
+            str_compare += " and flavor.vcpus " + cpu_op + " cpu"
+            if eval(str_compare):
+                if not instance_type_name or flavor.name == instance_type_name:
+                    return flavor
 
-        if res is None:
-            self.logger.error("No compatible flavor found")
-
-        return res
+        self.log_error("No compatible flavor found")
+        return None
 
     def concreteSystem(self, radl_system, auth_data):
         image_urls = radl_system.getValue("disk.0.image.url")
@@ -240,14 +256,14 @@ class OpenStackCloudConnector(CloudConnector):
             self.setIPsFromInstance(vm, node, auth_data)
             self.attach_volumes(vm, node, auth_data)
         else:
-            vm.state = VirtualMachine.OFF
+            self.log_warn("Error updating the instance %s. VM not found." % vm.id)
+            return (False, "Error updating the instance %s. VM not found." % vm.id)
 
         return (True, vm)
 
     def wait_volume(self, volume, client, state='available', timeout=60):
         """
         Wait a volume (with the state extra parameter) to be in certain state.
-
         Arguments:
            - volume(:py:class:`novaclient.volumes.Volume`): volume object or boolean.
            - state(str): State to wait for (default value 'available').
@@ -277,13 +293,10 @@ class OpenStackCloudConnector(CloudConnector):
                 vm.volumes = []
                 cont = 1
                 while (vm.info.systems[0].getValue("disk." + str(cont) + ".size") and
-                        vm.info.systems[0].getValue("disk." + str(cont) + ".device")):
-                    disk_size = vm.info.systems[0].getFeature(
-                        "disk." + str(cont) + ".size").getValue('G')
-                    disk_device = vm.info.systems[0].getValue(
-                        "disk." + str(cont) + ".device")
-                    self.logger.debug(
-                        "Creating a %d GB volume for the disk %d" % (int(disk_size), cont))
+                       vm.info.systems[0].getValue("disk." + str(cont) + ".device")):
+                    disk_size = vm.info.systems[0].getFeature("disk." + str(cont) + ".size").getValue('G')
+                    disk_device = vm.info.systems[0].getValue("disk." + str(cont) + ".device")
+                    self.log_debug("Creating a %d GB volume for the disk %d" % (int(disk_size), cont))
                     volume_name = "im-%d" % int(time.time() * 100.0)
 
                     client = self.get_client(auth_data)
@@ -292,17 +305,17 @@ class OpenStackCloudConnector(CloudConnector):
                     if success:
                         # Add the volume to the VM to remove it later
                         vm.volumes.append(volume)
-                        self.logger.debug("Attach the volume ID " + str(volume.id))
+                        self.log_debug("Attach the volume ID " + str(volume.id))
                         client.volumes.create_server_volume(node.id, volume.id, "/dev/" + disk_device)
                     else:
-                        self.logger.error("Error waiting the volume ID " + str(
+                        self.log_error("Error waiting the volume ID " + str(
                             volume.id) + " not attaching to the VM and destroying it.")
                         volume.delete()
 
                     cont += 1
             return True
         except Exception:
-            self.logger.exception(
+            self.log_exception(
                 "Error creating or attaching the volume to the node")
             return False
 
@@ -388,37 +401,34 @@ class OpenStackCloudConnector(CloudConnector):
         Update the features of the system with the information of the flavor
         """
         if flavor:
-            system.addFeature(Feature("memory.size", "=", flavor.ram, 'M'),
-                              conflict="other", missing="other")
-            system.addFeature(Feature("instance_type", "=", flavor.name),
-                              conflict="other", missing="other")
-            system.addFeature(Feature("cpu.count", "=", flavor.vcpus),
-                              conflict="me", missing="other")
+            system.addFeature(Feature("memory.size", "=", flavor.ram, 'M'), conflict="other", missing="other")
+            system.addFeature(Feature("instance_type", "=", flavor.name), conflict="other", missing="other")
+            system.addFeature(Feature("cpu.count", "=", flavor.vcpus), conflict="me", missing="other")
 
     def get_networks(self, auth_data, radl):
         """
         Get the list of networks to connect the VM
         """
-        neutroncli = self.get_client(auth_data, "neutron")
+        neutronc = self.get_client(auth_data, "neutron")
 
         nets = []
 
         ost_nets = []
-        for subnet in neutroncli.list_subnets()['subnets']:
-            os_net = neutroncli.show_network(subnet['network_id'])['network']
+        for subnet in neutronc.list_subnets()['subnets']:
+            os_net = neutronc.show_network(subnet['network_id'])['network']
             ip = os.path.dirname(subnet['cidr'])
-            is_public = not (any([IPAddress(ip) in IPNetwork(mask) for mask in Config.PRIVATE_NET_MASKS]))
+            is_public = not any([IPAddress(ip) in IPNetwork(mask) for mask in Config.PRIVATE_NET_MASKS])
             ost_nets.append((subnet['id'], subnet['name'], os_net['name'], subnet['cidr'], is_public))
 
         used_nets = []
         for radl_net in radl.networks:
             # check if this net is connected with the current VM
             num_net = radl.systems[0].getNumNetworkWithConnection(radl_net.id)
+            net_provider_id = radl_net.getValue('provider_id')
             if num_net is not None:
                 os_net_assigned = None
 
                 # First check if the user has specified a provider ID
-                net_provider_id = radl_net.getValue('provider_id')
                 if net_provider_id:
                     for sub_id, sub_name, net_name, sub_cidr, is_public in ost_nets:
                         if sub_name == net_provider_id:
@@ -428,9 +438,9 @@ class OpenStackCloudConnector(CloudConnector):
                     # if not select the first not used net
                     for sub_id, sub_name, net_name, sub_cidr, is_public in ost_nets:
                         if sub_name not in used_nets and radl_net.isPublic() == is_public:
-                                os_net_assigned = (sub_id, net_name, sub_name, sub_cidr)
-                                used_nets.append(sub_name)
-                                break
+                            os_net_assigned = (sub_id, net_name, sub_name, sub_cidr)
+                            used_nets.append(sub_name)
+                            break
 
                 if os_net_assigned:
                     sub_id, net_name, sub_name, sub_cidr = os_net_assigned
@@ -508,13 +518,13 @@ class OpenStackCloudConnector(CloudConnector):
                 system.setUserKeyCredentials(system.getCredentials().username, None, keypair.private_key)
             else:
                 keypair_name = "im-%d" % int(time.time() * 100.0)
-                self.logger.debug("Create keypair: %s" % keypair_name)
+                self.log_debug("Create keypair: %s" % keypair_name)
                 keypair = client.keypairs.create(keypair_name, public_key)
                 keypair_created = True
 
         elif not system.getValue("disk.0.os.credentials.password"):
             keypair_name = "im-%d" % int(time.time() * 100.0)
-            self.logger.debug("Create keypair: %s" % keypair_name)
+            self.log_debug("Create keypair: %s" % keypair_name)
             keypair = client.keypairs.create(keypair_name)
             keypair_created = True
             public_key = keypair.public_key
@@ -535,11 +545,14 @@ class OpenStackCloudConnector(CloudConnector):
         if cloud_init:
             args['userdata'] = cloud_init
 
+        if self.CONFIG_DRIVE:
+            args['ex_config_drive'] = self.CONFIG_DRIVE
+
         res = []
         i = 0
         all_failed = True
         while i < num_vm:
-            self.logger.debug("Creating node")
+            self.log_debug("Creating node")
 
             node = None
             msg = "Error creating the node. "
@@ -549,26 +562,27 @@ class OpenStackCloudConnector(CloudConnector):
                 msg += str(ex)
 
             if node:
-                vm = VirtualMachine(inf, node.id, self.cloud, radl, requested_radl, self.cloud.getCloudConnector())
+                vm = VirtualMachine(inf, node.id, self.cloud, radl, requested_radl, self.cloud.getCloudConnector(inf))
                 vm.info.systems[0].setValue('instance_id', str(node.id))
                 vm.info.systems[0].setValue('instance_name', str(node.name))
                 # Add the keypair name to remove it later
                 if keypair_name:
                     vm.keypair = keypair_name
-                self.logger.debug("Node successfully created.")
+                self.log_info("Node successfully created.")
                 all_failed = False
+                inf.add_vm(vm)
                 res.append((True, vm))
             else:
                 res.append((False, msg))
             i += 1
 
-        # if all the VMs have failed, remove the sg and keypair
+        # if all the VMs have failed, remove the sgs and keypair
         if all_failed:
             if keypair_created:
-                self.logger.debug("Deleting keypair: %s." % keypair_name)
+                self.log_debug("Deleting keypair: %s." % keypair_name)
                 keypair.delete()
             if sg:
-                self.logger.debug("Deleting security group: %s." % sg.id)
+                self.log_debug("Deleting security group: %s." % sg.id)
                 sg.delete()
 
         return res
@@ -584,8 +598,7 @@ class OpenStackCloudConnector(CloudConnector):
         n = 0
         requested_ips = []
         while vm.getRequestedSystem().getValue("net_interface." + str(n) + ".connection"):
-            net_conn = vm.getRequestedSystem().getValue(
-                'net_interface.' + str(n) + '.connection')
+            net_conn = vm.getRequestedSystem().getValue('net_interface.' + str(n) + '.connection')
             net = vm.info.get_network_by_id(net_conn)
             if net.isPublic():
                 fixed_ip = vm.getRequestedSystem().getValue("net_interface." + str(n) + ".ip")
@@ -599,11 +612,11 @@ class OpenStackCloudConnector(CloudConnector):
                 # It is a fixed IP
                 if ip not in public_ips:
                     # It has not been created yet, do it
-                    self.logger.debug("Asking for a fixed ip: %s." % ip)
+                    self.log_debug("Asking for a fixed ip: %s." % ip)
                     self.add_elastic_ip(vm, node, ip, pool_name, auth_data)
             else:
                 if num >= len(public_ips):
-                    self.logger.debug("Asking for public IP %d and there are %d" % (
+                    self.log_debug("Asking for public IP %d and there are %d" % (
                         num + 1, len(public_ips)))
                     self.add_elastic_ip(vm, node, None, pool_name, auth_data)
 
@@ -611,22 +624,22 @@ class OpenStackCloudConnector(CloudConnector):
         """
         Get a floating IP
         """
-        self.logger.debug("Asking for pool name: %s." % pool_name)
+        self.log_debug("Asking for pool name: %s." % pool_name)
 
         client = self.get_client(auth_data)
         if pool_name:
             try:
                 return client.floating_ips.create(pool_name)
             except NotFound:
-                self.logger.error("Error adding a Floating IP: No free IP in pool %s." % pool_name)
+                self.log_error("Error adding a Floating IP: No free IP in pool %s." % pool_name)
         else:
             for pool in client.floating_ip_pools.list():
                 try:
                     return client.floating_ips.create(pool.name)
                 except NotFound:
-                    self.logger.debug("Error adding a Floating IP: No free IP in pool %s." % pool_name)
+                    self.log_debug("Error adding a Floating IP: No free IP in pool %s." % pool_name)
 
-        self.logger.error("Error adding a Floating IP: No frees IP")
+        self.log_error("Error adding a Floating IP: No frees IP")
         return None
 
     def add_elastic_ip(self, vm, node, fixed_ip, pool_name, auth_data):
@@ -647,18 +660,17 @@ class OpenStackCloudConnector(CloudConnector):
                     node.add_floating_ip(floating_ip)
                     return floating_ip
                 except:
-                    self.logger.exception("Error attaching a Floating IP to the node.")
+                    self.log_exception("Error attaching a Floating IP to the node.")
                     floating_ip.delete()
                     return None
             except Exception:
-                self.logger.exception("Error adding an Floating IP to VM ID: " + str(vm.id))
+                self.log_exception("Error adding an Floating IP to VM ID: " + str(vm.id))
                 return None
         else:
-            self.logger.debug("The VM is not running, not adding an Floating IP.")
+            self.log_debug("The VM is not running, not adding an Floating IP.")
             return None
 
-    @staticmethod
-    def _get_security_group(client, sg_name):
+    def _get_security_group(self, client, sg_name):
         try:
             sg = None
             for elem in client.security_groups.list():
@@ -667,6 +679,7 @@ class OpenStackCloudConnector(CloudConnector):
                     break
             return sg
         except Exception:
+            self.log_exception("Error getting security groups.")
             return None
 
     def create_security_group(self, client, inf, radl):
@@ -677,7 +690,7 @@ class OpenStackCloudConnector(CloudConnector):
             sg = self._get_security_group(client, sg_name)
 
             if not sg:
-                self.logger.debug("Creating security group: " + sg_name)
+                self.log_debug("Creating security group: " + sg_name)
                 sg = client.security_groups.create(sg_name, "Security group created by the IM")
             else:
                 return sg
@@ -692,18 +705,22 @@ class OpenStackCloudConnector(CloudConnector):
         if public_net:
             outports = public_net.getOutPorts()
             if outports:
-                for remote_port, remote_protocol, local_port, local_protocol in outports:
-                    if local_port != 22:
-                        protocol = remote_protocol
-                        if remote_protocol != local_protocol:
-                            self.logger.warn(
-                                "Different protocols used in outports ignoring local port protocol!")
-
+                for outport in outports:
+                    if outport.is_range():
                         try:
-                            client.security_group_rules.create(sg.id, protocol, remote_port, remote_port, '0.0.0.0/0')
-                        except Exception, ex:
-                            self.logger.warn(
-                                "Exception adding SG rules: " + str(ex))
+                            client.security_group_rules.create(sg.id, outport.get_protocol(),
+                                                               outport.get_port_init(),
+                                                               outport.get_port_end(), '0.0.0.0/0')
+                        except Exception as ex:
+                            self.log_warn("Exception adding SG rules: " + str(ex))
+                    else:
+                        if outport.get_remote_port() != 22:
+                            try:
+                                client.security_group_rules.create(sg.id, outport.get_protocol(),
+                                                                   outport.get_remote_port(),
+                                                                   outport.get_remote_port(), '0.0.0.0/0')
+                            except Exception as ex:
+                                self.log_warn("Exception adding SG rules: " + str(ex))
 
         try:
             client.security_group_rules.create(sg.id, 'tcp', 22, 22, '0.0.0.0/0')
@@ -712,14 +729,16 @@ class OpenStackCloudConnector(CloudConnector):
             client.security_group_rules.create(sg.id, 'tcp', 1, 65535, group_id=sg.id)
             client.security_group_rules.create(sg.id, 'udp', 1, 65535, group_id=sg.id)
         except Exception, addex:
-            self.logger.warn(
-                "Exception adding SG rules. Probably the rules exists:" + str(addex))
-            pass
+            self.logger.warn("Exception adding SG rules. Probably the rules exists:" + str(addex))
 
         return res
 
-    def finalize(self, vm, auth_data):
-        node = self.get_node_with_id(vm.id, auth_data)
+    def finalize(self, vm, last, auth_data):
+        if vm.id:
+            node = self.get_node_with_id(vm.id, auth_data)
+        else:
+            self.log_warn("No VM ID. Ignoring")
+            node = None
 
         if node:
             client = self.get_client(auth_data)
@@ -731,34 +750,45 @@ class OpenStackCloudConnector(CloudConnector):
                 node.delete()
                 success = True
             except:
-                self.logger.exception("Error destroying VM " + str(vm.id))
+                self.log_exception("Error destroying VM " + str(vm.id))
 
             try:
-                public_key = vm.getRequestedSystem().getValue(
-                    'disk.0.os.credentials.public_key')
+                public_key = vm.getRequestedSystem().getValue('disk.0.os.credentials.public_key')
                 if (vm.keypair and public_key is None or len(public_key) == 0 or
                         (len(public_key) >= 1 and public_key.find('-----BEGIN CERTIFICATE-----') != -1)):
                     # only delete in case of the user do not specify the
                     # keypair name
                     client.keypairs.get(vm.keypair).delete()
-
-                self.delete_floating_ips(node, vm, floating_ips)
-
-                # Delete the attached volumes
-                self.delete_volumes(vm)
-
-                # Delete the SG if this is the last VM
-                self.delete_security_group(node, sgs, vm.inf, vm.id, client)
             except:
-                self.logger.exception("VM " + str(vm.id) + " successfully destroyed. "
-                                      "But some errors in deleting other elements, Ignoring it.")
+                self.log_exception("Error deleting keypairs.")
+
+            try:
+                self.delete_floating_ips(node, vm, floating_ips)
+            except:
+                self.log_exception("Error deleting elastic ips.")
 
             if not success:
                 return (False, "Error destroying node: " + vm.id)
 
-            self.logger.debug("VM " + str(vm.id) + " successfully destroyed")
+            self.log_info("VM " + str(vm.id) + " successfully destroyed")
         else:
-            self.logger.warn("VM " + str(vm.id) + " not found.")
+            self.log_warn("VM " + str(vm.id) + " not found.")
+
+        try:
+            # Delete the attached volumes
+            self.delete_volumes(vm, auth_data)
+        except:
+            self.log_exception("Error deleting volumes.")
+
+        try:
+            # Delete the SG if this is the last VM
+            if last:
+                self.delete_security_group(sgs, vm.inf, vm.id, client)
+            else:
+                # If this is not the last vm, we skip this step
+                self.log_info("There are active instances. Not removing the SG")
+        except:
+            self.log_exception("Error deleting security groups.")
 
         return (True, "")
 
@@ -771,16 +801,15 @@ class OpenStackCloudConnector(CloudConnector):
            - vm(:py:class:`IM.VirtualMachine`): VM information.
         """
         try:
-            self.logger.debug("Remove Floating IPs")
+            self.log_debug("Remove Floating IPs")
             for floating_ip in floating_ips:
                 if floating_ip.instance_id == node.id:
                     # delete the ip
                     floating_ip.delete()
         except Exception:
-            self.logger.exception(
-                "Error removing Elastic/Floating IPs to VM ID: " + str(vm.id))
+            self.log_exception("Error removing Elastic/Floating IPs to VM ID: " + str(vm.id))
 
-    def delete_security_group(self, node, sgs, inf, vm_id, client, timeout=60):
+    def delete_security_group(self, sgs, inf, vm_id, client, timeout=60):
         """
         Delete the SG of this infrastructure if this is the last VM
         """
@@ -837,19 +866,19 @@ users:
             config += "\n%s\n\n" % cloud_config_str.replace("\\n", "\n")
         return config
 
-    def delete_volumes(self, vm, timeout=300):
+    def delete_volumes(self, vm, auth_data, timeout=300):
         """
         Delete the volumes of a VM
-
         Arguments:
            - vm(:py:class:`IM.VirtualMachine`): VM information.
            - timeout(int): Time needed to delete the volume.
         """
         all_ok = True
         if "volumes" in vm.__dict__.keys() and vm.volumes:
+            client = self.get_client(auth_data)
             for volume in vm.volumes:
                 try:
-                    success = self.wait_volume(volume, timeout=timeout)
+                    success = self.wait_volume(volume, client, timeout=timeout)
                     if not success:
                         self.logger.error("Error waiting the volume ID " + str(volume.id))
                     success = volume.delete()
@@ -870,7 +899,7 @@ users:
                 node.resume()
                 return (True, "")
             except Exception, ex:
-                self.logger.exception("Error starting VM: " % str(ex))
+                self.log_exception("Error starting VM: " % str(ex))
                 return (False, "Error starting VM: " % str(ex))
         else:
             return (False, "VM not found with id: " + vm.id)
@@ -882,7 +911,7 @@ users:
                 node.suspend()
                 return (True, "")
             except Exception, ex:
-                self.logger.exception("Error stopping VM: " % str(ex))
+                self.log_exception("Error stopping VM: " % str(ex))
                 return (False, "Error stopping VM: " % str(ex))
         else:
             return (False, "VM not found with id: " + vm.id)
@@ -897,7 +926,7 @@ users:
                 node.resize(instance_type)
                 node.confirm_resize()
             except Exception, ex:
-                self.logger.exception("Error resizing VM.")
+                self.log_exception("Error resizing VM.")
                 return (False, "Error resizing VM: " + str(ex))
 
             return (True, "")

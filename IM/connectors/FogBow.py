@@ -17,10 +17,15 @@
 import json
 import os
 import sys
-import httplib
+
+try:
+    from httplib import HTTPSConnection, HTTPConnection
+except ImportError:
+    from http.client import HTTPSConnection, HTTPConnection
+
 from IM.uriparse import uriparse
 from IM.VirtualMachine import VirtualMachine
-from CloudConnector import CloudConnector
+from .CloudConnector import CloudConnector
 from radl.radl import Feature
 
 
@@ -59,9 +64,9 @@ class FogBowCloudConnector(CloudConnector):
         """
 
         if self.cloud.protocol == 'https':
-            conn = httplib.HTTPSConnection(self.cloud.server, self.cloud.port)
+            conn = HTTPSConnection(self.cloud.server, self.cloud.port)
         else:
-            conn = httplib.HTTPConnection(self.cloud.server, self.cloud.port)
+            conn = HTTPConnection(self.cloud.server, self.cloud.port)
 
         return conn
 
@@ -191,10 +196,7 @@ class FogBowCloudConnector(CloudConnector):
             resp = conn.getresponse()
 
             output = resp.read()
-            if resp.status == 404:
-                vm.state = VirtualMachine.OFF
-                return (True, vm)
-            elif resp.status != 200:
+            if resp.status != 200:
                 return (False, resp.reason + "\n" + output)
             else:
                 providing_member = self.get_occi_attribute_value(
@@ -264,8 +266,8 @@ class FogBowCloudConnector(CloudConnector):
 
                         return (True, vm)
 
-        except Exception, ex:
-            self.logger.exception("Error connecting with FogBow Manager")
+        except Exception as ex:
+            self.log_exception("Error connecting with FogBow Manager")
             return (False, "Error connecting with FogBow Manager: " + str(ex))
 
     def launch(self, inf, radl, requested_radl, num_vm, auth_data):
@@ -301,7 +303,7 @@ class FogBowCloudConnector(CloudConnector):
                 conn.putheader('Content-Type', 'text/occi')
                 # conn.putheader('Accept', 'text/occi')
                 if auth_headers:
-                    for k, v in auth_headers.iteritems():
+                    for k, v in auth_headers.items():
                         conn.putheader(k, v)
 
                 conn.putheader(
@@ -361,17 +363,22 @@ class FogBowCloudConnector(CloudConnector):
                     vm = VirtualMachine(
                         inf, occi_vm_id, self.cloud, radl, requested_radl)
                     vm.info.systems[0].setValue('instance_id', str(vm.id))
+                    inf.add_vm(vm)
                     res.append((True, vm))
 
-            except Exception, ex:
-                self.logger.exception("Error connecting with FogBow manager")
+            except Exception as ex:
+                self.log_exception("Error connecting with FogBow manager")
                 res.append((False, "ERROR: " + str(ex)))
 
             i += 1
 
         return res
 
-    def finalize(self, vm, auth_data):
+    def finalize(self, vm, last, auth_data):
+        if not vm.id:
+            self.log_warn("No VM ID. Ignoring")
+            return True, "No VM ID. Ignoring"
+
         auth = self.get_auth_headers(auth_data)
         headers = {'Accept': 'text/plain'}
         if auth:
@@ -386,7 +393,7 @@ class FogBowCloudConnector(CloudConnector):
             output = resp.read()
             if resp.status == 404:
                 vm.state = VirtualMachine.OFF
-                return (True, vm.id)
+                return (True, "")
             elif resp.status != 200:
                 return (False, "Error removing the VM: " + resp.reason + "\n" + output)
             else:
@@ -411,11 +418,11 @@ class FogBowCloudConnector(CloudConnector):
 
             output = str(resp.read())
             if resp.status == 404 or resp.status == 200:
-                return (True, vm.id)
+                return (True, "")
             else:
                 return (False, "Error removing the VM: " + resp.reason + "\n" + output)
         except Exception:
-            self.logger.exception("Error connecting with OCCI server")
+            self.log_exception("Error connecting with OCCI server")
             return (False, "Error connecting with OCCI server")
 
     def stop(self, vm, auth_data):
@@ -446,7 +453,7 @@ class IdentityPlugin:
             raise Exception("Not valid Identity Plugin.")
         try:
             return getattr(sys.modules[__name__], identity_type + "IdentityPlugin")()
-        except Exception, ex:
+        except Exception as ex:
             raise Exception("IdentityPlugin not supported: %s (error: %s)" % (
                 identity_type, str(ex)))
 
@@ -499,7 +506,7 @@ class KeyStoneIdentityPlugin(IdentityPlugin):
                 server = uri[1].split(":")[0]
                 port = int(uri[1].split(":")[1])
 
-                conn = httplib.HTTPSConnection(server, port)
+                conn = HTTPSConnection(server, port)
                 conn.putrequest('POST', "/v2.0/tokens")
                 conn.putheader('Accept', 'application/json')
                 conn.putheader('Content-Type', 'application/json')

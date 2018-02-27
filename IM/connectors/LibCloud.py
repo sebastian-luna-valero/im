@@ -15,14 +15,19 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import time
+import uuid
+
+try:
+    from libcloud.compute.base import NodeImage, NodeAuthSSHKey
+    from libcloud.compute.types import Provider, NodeState
+    from libcloud.compute.providers import get_driver
+except Exception as ex:
+    print("WARN: libcloud library not correctly installed. LibCloudCloudConnector will not work!.")
+    print(ex)
+
 from IM.uriparse import uriparse
 from IM.VirtualMachine import VirtualMachine
-from CloudConnector import CloudConnector
-
-from libcloud.compute.base import NodeImage, NodeAuthSSHKey
-from libcloud.compute.types import Provider, NodeState
-from libcloud.compute.providers import get_driver
-
+from .CloudConnector import CloudConnector
 from radl.radl import Feature
 
 
@@ -34,9 +39,9 @@ class LibCloudCloudConnector(CloudConnector):
     type = "LibCloud"
     """str with the name of the provider."""
 
-    def __init__(self, cloud_info):
+    def __init__(self, cloud_info, inf):
         self.driver = None
-        CloudConnector.__init__(self, cloud_info)
+        CloudConnector.__init__(self, cloud_info, inf)
 
     def get_driver(self, auth_data):
         """
@@ -52,12 +57,12 @@ class LibCloudCloudConnector(CloudConnector):
         else:
             auth = auth_data.getAuthInfo(LibCloudCloudConnector.type)
             if auth and 'driver' in auth[0]:
-                cls = get_driver(eval("Provider." + auth[0]['driver']))
+                cls = get_driver(getattr(Provider, auth[0]['driver']))
 
                 MAP = {"username": "key", "password": "secret"}
 
                 params = {}
-                for key, value in auth[0].iteritems():
+                for key, value in auth[0].items():
                     if key not in ["type", "driver", "id"]:
                         params[MAP[key]] = value
 
@@ -65,7 +70,7 @@ class LibCloudCloudConnector(CloudConnector):
                     if 'host' in auth[0]:
                         params["ex_force_auth_url"] = auth[0]['host']
                     else:
-                        self.logger.error("Host data is needed in OpenStack")
+                        self.log_error("Host data is needed in OpenStack")
                         return None
                 else:
                     if 'host' in auth[0]:
@@ -81,7 +86,7 @@ class LibCloudCloudConnector(CloudConnector):
                 self.driver = driver
                 return driver
             else:
-                self.logger.error("Incorrect auth data")
+                self.log_error("Incorrect auth data")
                 return None
 
     def get_instance_type(self, sizes, radl):
@@ -118,7 +123,7 @@ class LibCloudCloudConnector(CloudConnector):
                         res = size
 
         if res is None:
-            self.logger.error("No compatible size found")
+            self.log_error("No compatible size found")
 
         return res
 
@@ -220,7 +225,7 @@ class LibCloudCloudConnector(CloudConnector):
 
         args = {'size': instance_type,
                 'image': image,
-                'name': "%s-%s" % (name, int(time.time() * 100))}
+                'name': "%s-%s" % (name, str(uuid.uuid1()))}
 
         keypair = None
         public_key = system.getValue("disk.0.os.credentials.public_key")
@@ -236,7 +241,7 @@ class LibCloudCloudConnector(CloudConnector):
                     else:
                         args["ex_keyname"] = keypair.name
             elif not system.getValue("disk.0.os.credentials.password"):
-                keypair_name = "im-%d" % int(time.time() * 100.0)
+                keypair_name = "im-%s" % str(uuid.uuid1())
                 keypair = driver.create_key_pair(keypair_name)
                 system.setUserKeyCredentials(
                     system.getCredentials().username, None, keypair.private_key)
@@ -249,18 +254,19 @@ class LibCloudCloudConnector(CloudConnector):
         res = []
         i = 0
         while i < num_vm:
-            self.logger.debug("Creating node")
+            self.log_debug("Creating node")
 
             node = driver.create_node(**args)
 
             if node:
                 vm = VirtualMachine(
-                    inf, node.id, self.cloud, radl, requested_radl, self.cloud.getCloudConnector())
+                    inf, node.id, self.cloud, radl, requested_radl, self.cloud.getCloudConnector(inf))
                 vm.info.systems[0].setValue('instance_id', str(node.id))
                 vm.info.systems[0].setValue('instance_name', str(node.name))
                 # Add the keypair name to remove it later
                 vm.keypair = keypair_name
-                self.logger.debug("Node successfully created.")
+                self.log_debug("Node successfully created.")
+                inf.add_vm(vm)
                 res.append((True, vm))
             else:
                 res.append((False, "Error creating the node"))
@@ -287,7 +293,7 @@ class LibCloudCloudConnector(CloudConnector):
                 res = node
         return res
 
-    def finalize(self, vm, auth_data):
+    def finalize(self, vm, last, auth_data):
         node = self.get_node_with_id(vm.id, auth_data)
 
         if node:
@@ -306,14 +312,14 @@ class LibCloudCloudConnector(CloudConnector):
             self.delete_elastic_ips(node, vm)
 
             # Delete the EBS volumes
-            self.delete_volumes(vm)
+            self.delete_volumes(node.driver, vm)
 
             if not success:
                 return (False, "Error destroying node: " + vm.id)
 
-            self.logger.debug("VM " + str(vm.id) + " successfully destroyed")
+            self.log_debug("VM " + str(vm.id) + " successfully destroyed")
         else:
-            self.logger.warn("VM " + str(vm.id) + " not found.")
+            self.log_warn("VM " + str(vm.id) + " not found.")
 
         return (True, "")
 
@@ -339,13 +345,14 @@ class LibCloudCloudConnector(CloudConnector):
                 self.update_system_info_from_instance(
                     vm.info.systems[0], node.size)
             else:
-                self.logger.debug(
+                self.log_debug(
                     "VM " + str(vm.id) + " has no node.size info. Not updating system info.")
 
             self.setIPsFromInstance(vm, node)
             self.attach_volumes(vm, node)
         else:
-            vm.state = VirtualMachine.OFF
+            self.log_warn("Error updating the instance %s. VM not found." % vm.id)
+            return (False, "Error updating the instance %s. VM not found." % vm.id)
 
         return (True, vm)
 
@@ -402,7 +409,7 @@ class LibCloudCloudConnector(CloudConnector):
         """
         if vm.state == VirtualMachine.RUNNING:
             try:
-                self.logger.debug("Add an Elastic/Floating IP")
+                self.log_debug("Add an Elastic/Floating IP")
                 if node.driver.name == "Amazon EC2":
                     elastic_ip = None
                     if fixed_ip:
@@ -427,17 +434,17 @@ class LibCloudCloudConnector(CloudConnector):
                             node, floating_ip)
                         return floating_ip
                     else:
-                        self.logger.error(
+                        self.log_error(
                             "Error adding a Floating IP: No pools available.")
                         return None
                 else:
                     return None
             except Exception:
-                self.logger.exception(
+                self.log_exception(
                     "Error adding an Elastic/Floating IP to VM ID: " + str(vm.id))
                 return None
         else:
-            self.logger.debug(
+            self.log_debug(
                 "The VM is not running, not adding an Elastic/Floating IP.")
             return None
 
@@ -450,7 +457,7 @@ class LibCloudCloudConnector(CloudConnector):
            - vm(:py:class:`IM.VirtualMachine`): VM information.
         """
         try:
-            self.logger.debug("Remove Elastic/Floating IPs")
+            self.log_debug("Remove Elastic/Floating IPs")
             if node.driver.name == "Amazon EC2":
                 elastic_ips = node.driver.ex_describe_addresses_for_node(node)
                 for elastic_ip in elastic_ips:
@@ -459,8 +466,7 @@ class LibCloudCloudConnector(CloudConnector):
                     n = 0
                     found = False
                     while vm.getRequestedSystem().getValue("net_interface." + str(n) + ".connection"):
-                        net_conn = vm.getRequestedSystem().getValue(
-                            'net_interface.' + str(n) + '.connection')
+                        net_conn = vm.getRequestedSystem().getValue('net_interface.' + str(n) + '.connection')
                         if vm.info.get_network_by_id(net_conn).isPublic():
                             if vm.getRequestedSystem().getValue("net_interface." + str(n) + ".ip"):
                                 fixed_ip = vm.getRequestedSystem().getValue("net_interface." + str(n) + ".ip")
@@ -470,19 +476,18 @@ class LibCloudCloudConnector(CloudConnector):
                         n += 1
 
                     if not found:
-                        self.logger.debug("Now release it")
+                        self.log_debug("Now release it")
                         node.driver.ex_release_address(elastic_ip)
             elif node.driver.name == "OpenStack":
                 for floating_ip in node.driver.ex_list_floating_ips():
                     if floating_ip.node_id == node.id:
+                        self.log_debug("Remove Floating IP: %s" % floating_ip.ip_address)
                         # remove it from the node
-                        node.driver.ex_detach_floating_ip_from_node(
-                            node, floating_ip)
+                        node.driver.ex_detach_floating_ip_from_node(node, floating_ip)
                         # delete the ip
                         floating_ip.delete()
         except Exception:
-            self.logger.exception(
-                "Error removing Elastic/Floating IPs to VM ID: " + str(vm.id))
+            self.log_exception("Error removing Elastic/Floating IPs to VM ID: " + str(vm.id))
 
     def start(self, vm, auth_data):
         node = self.get_node_with_id(vm.id, auth_data)
@@ -526,8 +531,8 @@ class LibCloudCloudConnector(CloudConnector):
 
                 try:
                     success = resize_func(node, instance_type)
-                except Exception, ex:
-                    self.logger.exception("Error resizing VM.")
+                except Exception as ex:
+                    self.log_exception("Error resizing VM.")
                     return (False, "Error resizing VM: " + str(ex))
 
                 if success:
@@ -555,10 +560,7 @@ class LibCloudCloudConnector(CloudConnector):
                 while volume.extra['state'] != state and volume.extra['state'] not in err_states and cont < timeout:
                     cont += 2
                     time.sleep(2)
-                    for vol in volume.driver.list_volumes():
-                        if vol.id == volume.id:
-                            volume = vol
-                            break
+                    volume = volume.driver.ex_get_volume(volume.id)
                 return volume.extra['state'] == state
 
             return True
@@ -577,35 +579,38 @@ class LibCloudCloudConnector(CloudConnector):
             if node.state == NodeState.RUNNING and "volumes" not in vm.__dict__.keys():
                 vm.volumes = []
                 cont = 1
-                while (vm.info.systems[0].getValue("disk." + str(cont) + ".size") and
-                        vm.info.systems[0].getValue("disk." + str(cont) + ".device")):
-                    disk_size = vm.info.systems[0].getFeature(
-                        "disk." + str(cont) + ".size").getValue('G')
-                    disk_device = vm.info.systems[0].getValue(
-                        "disk." + str(cont) + ".device")
-                    self.logger.debug(
-                        "Creating a %d GB volume for the disk %d" % (int(disk_size), cont))
-                    volume_name = "im-%d" % int(time.time() * 100.0)
+                while vm.info.systems[0].getValue("disk." + str(cont) + ".size"):
+                    disk_size = vm.info.systems[0].getFeature("disk." + str(cont) + ".size").getValue('G')
+                    disk_device = vm.info.systems[0].getValue("disk." + str(cont) + ".device")
+                    if disk_device:
+                        disk_device = "/dev/" + disk_device
+                    self.log_debug("Creating a %d GB volume for the disk %d" % (int(disk_size), cont))
+                    volume_name = "im-%s" % str(uuid.uuid1())
 
                     location = self.get_node_location(node)
-                    volume = node.driver.create_volume(
-                        int(disk_size), volume_name, location=location)
+                    volume = node.driver.create_volume(int(disk_size), volume_name, location=location)
                     success = self.wait_volume(volume)
                     if success:
                         # Add the volume to the VM to remove it later
-                        vm.volumes.append(volume)
-                        self.logger.debug(
-                            "Attach the volume ID " + str(volume.id))
-                        volume.attach(node, "/dev/" + disk_device)
+                        vm.volumes.append(volume.id)
+                        self.log_debug("Attach the volume ID " + str(volume.id))
+                        volume.attach(node, disk_device)
+                        # wait the volume to be attached
+                        self.wait_volume(volume, state='in-use')
+
+                        volume = volume.driver.ex_get_volume(volume.id)
+                        if 'attachments' in volume.extra and volume.extra['attachments']:
+                            disk_device = volume.extra['attachments'][0]['device']
+                            vm.info.systems[0].setValue("disk." + str(cont) + ".device", disk_device)
                     else:
-                        self.logger.error("Error waiting the volume ID " + str(
+                        self.log_error("Error waiting the volume ID " + str(
                             volume.id) + " not attaching to the VM and destroying it.")
                         volume.destroy()
 
                     cont += 1
             return True
         except Exception:
-            self.logger.exception(
+            self.log_exception(
                 "Error creating or attaching the volume to the node")
             return False
 
@@ -624,7 +629,7 @@ class LibCloudCloudConnector(CloudConnector):
                     return location
         return None
 
-    def delete_volumes(self, vm, timeout=300):
+    def delete_volumes(self, driver, vm, timeout=300):
         """
         Delete the volumes of a VM
 
@@ -634,19 +639,19 @@ class LibCloudCloudConnector(CloudConnector):
         """
         all_ok = True
         if "volumes" in vm.__dict__.keys() and vm.volumes:
-            for volume in vm.volumes:
+            for volumeid in vm.volumes:
+                self.log_debug("Deleting volume ID %s" % volumeid)
                 try:
+                    volume = driver.ex_get_volume(volumeid)
                     success = self.wait_volume(volume, timeout=timeout)
                     if not success:
-                        self.logger.error(
-                            "Error waiting the volume ID " + str(volume.id))
+                        self.log_error("Error waiting the volume ID " + str(volume.id))
                     success = volume.destroy()
                     if not success:
-                        self.logger.error(
-                            "Error destroying the volume: " + str(volume.id))
+                        self.log_error("Error destroying the volume: " + str(volume.id))
                 except:
-                    self.logger.exception(
-                        "Error destroying the volume: " + str(volume.id) + " from the node: " + vm.id)
+                    self.log_exception("Error destroying the volume: " + str(volume.id) +
+                                       " from the node: " + str(vm.id))
                     success = False
 
                 if not success:

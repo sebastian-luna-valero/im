@@ -16,17 +16,19 @@
 
 import logging
 import threading
-import bottle
 import json
+import base64
+import bottle
 
-from InfrastructureInfo import IncorrectVMException, DeletedVMException
-from InfrastructureManager import (InfrastructureManager, DeletedInfrastructureException,
-                                   IncorrectInfrastructureException, UnauthorizedUserException,
-                                   InvaliddUserException)
-from auth import Authentication
-from config import Config
+from IM.InfrastructureInfo import IncorrectVMException, DeletedVMException
+from IM.InfrastructureManager import (InfrastructureManager, DeletedInfrastructureException,
+                                      IncorrectInfrastructureException, UnauthorizedUserException,
+                                      InvaliddUserException)
+from IM.auth import Authentication
+from IM.config import Config
 from radl.radl_json import parse_radl as parse_radl_json, dump_radl as dump_radl_json, featuresToSimple, radlToSimple
 from radl.radl import RADL, Features, Feature
+from IM.tosca.Tosca import Tosca
 
 logger = logging.getLogger('InfrastructureManager')
 
@@ -58,15 +60,23 @@ bottle_server = None
 class MySSLCherryPy(bottle.ServerAdapter):
 
     def run(self, handler):
-        from cherrypy.wsgiserver.ssl_pyopenssl import pyOpenSSLAdapter
-        from cherrypy import wsgiserver
-        server = wsgiserver.CherryPyWSGIServer((self.host, self.port), handler)
+        try:
+            # First try to use the new version
+            from cheroot.ssl.pyopenssl import pyOpenSSLAdapter
+            from cheroot import wsgi
+            server = wsgi.Server((self.host, self.port), handler, request_queue_size=32)
+        except:
+            from cherrypy.wsgiserver.ssl_pyopenssl import pyOpenSSLAdapter
+            from cherrypy import wsgiserver
+            server = wsgiserver.CherryPyWSGIServer((self.host, self.port), handler, request_queue_size=32)
+
         self.srv = server
 
         # If cert variable is has a valid path, SSL will be used
         # You can set it to None to disable SSL
-        server.ssl_adapter = pyOpenSSLAdapter(
-            Config.REST_SSL_CERTFILE, Config.REST_SSL_KEYFILE, Config.REST_SSL_CA_CERTS)
+        server.ssl_adapter = pyOpenSSLAdapter(Config.REST_SSL_CERTFILE,
+                                              Config.REST_SSL_KEYFILE,
+                                              Config.REST_SSL_CA_CERTS)
         try:
             server.start()
         finally:
@@ -76,37 +86,25 @@ class MySSLCherryPy(bottle.ServerAdapter):
         self.srv.stop()
 
 
-class StoppableWSGIRefServer(bottle.ServerAdapter):
+class MyCherryPy(bottle.ServerAdapter):
 
-    def run(self, app):  # pragma: no cover
-        from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
-        from wsgiref.simple_server import make_server
-        import socket
+    def run(self, handler):
+        try:
+            # First try to use the new version
+            from cheroot import wsgi
+            server = wsgi.Server((self.host, self.port), handler, request_queue_size=32)
+        except:
+            from cherrypy import wsgiserver
+            server = wsgiserver.CherryPyWSGIServer((self.host, self.port), handler, request_queue_size=32)
 
-        class FixedHandler(WSGIRequestHandler):
+        self.srv = server
+        try:
+            server.start()
+        finally:
+            server.stop()
 
-            def address_string(self):  # Prevent reverse DNS lookups please.
-                return self.client_address[0]
-
-            def log_request(*args, **kw):
-                if not self.quiet:
-                    return WSGIRequestHandler.log_request(*args, **kw)
-
-        handler_cls = self.options.get('handler_class', FixedHandler)
-        server_cls = self.options.get('server_class', WSGIServer)
-
-        if ':' in self.host:  # Fix wsgiref for IPv6 addresses.
-            if getattr(server_cls, 'address_family') == socket.AF_INET:
-                class server_cls(server_cls):
-                    address_family = socket.AF_INET6
-
-        srv = make_server(self.host, self.port, app, server_cls, handler_cls)
-        self.srv = srv  # THIS IS THE ONLY CHANGE TO THE ORIGINAL CLASS METHOD!
-        srv.serve_forever()
-
-    def shutdown(self):  # ADD SHUTDOWN METHOD.
-        self.srv.shutdown()
-        # self.server.server_close()
+    def shutdown(self):
+        self.srv.stop()
 
 
 def run_in_thread(host, port):
@@ -123,7 +121,7 @@ def run(host, port):
         bottle_server = MySSLCherryPy(host=host, port=port)
         bottle.run(app, host=host, port=port, server=bottle_server, quiet=True)
     else:
-        bottle_server = StoppableWSGIRefServer(host=host, port=port)
+        bottle_server = MyCherryPy(host=host, port=port)
         bottle.run(app, server=bottle_server, quiet=True)
 
 
@@ -145,7 +143,8 @@ def return_error(code, msg):
 
 
 def stop():
-    bottle_server.shutdown()
+    if bottle_server:
+        bottle_server.shutdown()
 
 
 def get_media_type(header):
@@ -161,7 +160,10 @@ def get_media_type(header):
             pos = media_type.find(";")
             if pos != -1:
                 media_type = media_type[:pos]
-            res.append(media_type.strip())
+            if media_type.strip() in ["text/yaml", "text/x-yaml"]:
+                res.append("text/yaml")
+            else:
+                res.append(media_type.strip())
 
     return res
 
@@ -171,8 +173,36 @@ def get_auth_header():
     Get the Authentication object from the AUTHORIZATION header
     replacing the new line chars.
     """
-    auth_data = bottle.request.headers[
-        'AUTHORIZATION'].replace(AUTH_NEW_LINE_SEPARATOR, "\n")
+    auth_header = bottle.request.headers['AUTHORIZATION']
+    if Config.SINGLE_SITE:
+        if auth_header.startswith("Basic "):
+            auth_data = base64.b64decode(auth_header[6:])
+            user_pass = auth_data.split(":")
+            im_auth = {"type": "InfrastructureManager",
+                       "username": user_pass[0],
+                       "password": user_pass[1]}
+            single_site_auth = {"type": Config.SINGLE_SITE_TYPE,
+                                "host": Config.SINGLE_SITE_AUTH_HOST,
+                                "username": user_pass[0],
+                                "password": user_pass[1]}
+            return Authentication([im_auth, single_site_auth])
+        elif auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            im_auth = {"type": "InfrastructureManager",
+                       "username": "user",
+                       "token": token}
+            if Config.SINGLE_SITE_TYPE == "OpenStack":
+                single_site_auth = {"type": Config.SINGLE_SITE_TYPE,
+                                    "host": Config.SINGLE_SITE_AUTH_HOST,
+                                    "username": "indigo-dc",
+                                    "tenant": "oidc",
+                                    "password": token}
+            else:
+                single_site_auth = {"type": Config.SINGLE_SITE_TYPE,
+                                    "host": Config.SINGLE_SITE_AUTH_HOST,
+                                    "token": token}
+            return Authentication([im_auth, single_site_auth])
+    auth_data = auth_header.replace(AUTH_NEW_LINE_SEPARATOR, "\n")
     auth_data = auth_data.split(AUTH_LINE_SEPARATOR)
     return Authentication(Authentication.read_auth_data(auth_data))
 
@@ -248,37 +278,37 @@ def format_output(res, default_type="text/plain", field_name=None, list_field_na
     return info
 
 
-@app.route('/infrastructures/:id', method='DELETE')
-def RESTDestroyInfrastructure(id=None):
+@app.route('/infrastructures/:infid', method='DELETE')
+def RESTDestroyInfrastructure(infid=None):
     try:
         auth = get_auth_header()
     except:
         return return_error(401, "No authentication data provided")
 
     try:
-        InfrastructureManager.DestroyInfrastructure(id, auth)
+        InfrastructureManager.DestroyInfrastructure(infid, auth)
         bottle.response.content_type = "text/plain"
         return ""
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error Destroying Inf: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error Destroying Inf: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error Destroying Inf: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Destroying Inf")
         return return_error(400, "Error Destroying Inf: " + str(ex))
 
 
-@app.route('/infrastructures/:id', method='GET')
-def RESTGetInfrastructureInfo(id=None):
+@app.route('/infrastructures/:infid', method='GET')
+def RESTGetInfrastructureInfo(infid=None):
     try:
         auth = get_auth_header()
     except:
         return return_error(401, "No authentication data provided")
 
     try:
-        vm_ids = InfrastructureManager.GetInfrastructureInfo(id, auth)
+        vm_ids = InfrastructureManager.GetInfrastructureInfo(infid, auth)
         res = []
 
         protocol = "http://"
@@ -286,22 +316,22 @@ def RESTGetInfrastructureInfo(id=None):
             protocol = "https://"
         for vm_id in vm_ids:
             res.append(protocol + bottle.request.environ[
-                       'HTTP_HOST'] + '/infrastructures/' + str(id) + '/vms/' + str(vm_id))
+                       'HTTP_HOST'] + '/infrastructures/' + str(infid) + '/vms/' + str(vm_id))
 
         return format_output(res, "text/uri-list", "uri-list", "uri")
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error Getting Inf. info: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error Getting Inf. info: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error Getting Inf. info: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Getting Inf. info")
         return return_error(400, "Error Getting Inf. info: " + str(ex))
 
 
-@app.route('/infrastructures/:id/:prop', method='GET')
-def RESTGetInfrastructureProperty(id=None, prop=None):
+@app.route('/infrastructures/:infid/:prop', method='GET')
+def RESTGetInfrastructureProperty(infid=None, prop=None):
     try:
         auth = get_auth_header()
     except:
@@ -309,27 +339,50 @@ def RESTGetInfrastructureProperty(id=None, prop=None):
 
     try:
         if prop == "contmsg":
-            res = InfrastructureManager.GetInfrastructureContMsg(id, auth)
+            headeronly = False
+            if "headeronly" in bottle.request.params.keys():
+                str_headeronly = bottle.request.params.get("headeronly").lower()
+                if str_headeronly in ['yes', 'true', '1']:
+                    headeronly = True
+                elif str_headeronly in ['no', 'false', '0']:
+                    headeronly = False
+                else:
+                    return return_error(400, "Incorrect value in context parameter")
+
+            res = InfrastructureManager.GetInfrastructureContMsg(infid, auth, headeronly)
         elif prop == "radl":
-            res = InfrastructureManager.GetInfrastructureRADL(id, auth)
+            res = InfrastructureManager.GetInfrastructureRADL(infid, auth)
         elif prop == "state":
             accept = get_media_type('Accept')
             if accept and "application/json" not in accept and "*/*" not in accept and "application/*" not in accept:
                 return return_error(415, "Unsupported Accept Media Types: %s" % accept)
             bottle.response.content_type = "application/json"
-            res = InfrastructureManager.GetInfrastructureState(id, auth)
+            res = InfrastructureManager.GetInfrastructureState(infid, auth)
             return format_output(res, default_type="application/json", field_name="state")
+        elif prop == "outputs":
+            accept = get_media_type('Accept')
+            if accept and "application/json" not in accept and "*/*" not in accept and "application/*" not in accept:
+                return return_error(415, "Unsupported Accept Media Types: %s" % accept)
+            bottle.response.content_type = "application/json"
+            auth = InfrastructureManager.check_auth_data(auth)
+            sel_inf = InfrastructureManager.get_infrastructure(infid, auth)
+            if "TOSCA" in sel_inf.extra_info:
+                res = sel_inf.extra_info["TOSCA"].get_outputs(sel_inf)
+            else:
+                bottle.abort(
+                    403, "'outputs' infrastructure property is not valid in this infrastructure")
+            return format_output(res, default_type="application/json", field_name="outputs")
         else:
             return return_error(404, "Incorrect infrastructure property")
 
         return format_output(res, field_name=prop)
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error Getting Inf. prop: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error Getting Inf. prop: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error Getting Inf. prop: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Getting Inf. prop")
         return return_error(400, "Error Getting Inf. prop: " + str(ex))
 
@@ -353,9 +406,9 @@ def RESTGetInfrastructureList():
                 protocol + bottle.request.environ['HTTP_HOST'] + "/infrastructures/" + str(inf_id))
 
         return format_output(res, "text/uri-list", "uri-list", "uri")
-    except InvaliddUserException, ex:
+    except InvaliddUserException as ex:
         return return_error(401, "Error Getting Inf. List: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Getting Inf. List")
         return return_error(400, "Error Getting Inf. List: " + str(ex))
 
@@ -369,31 +422,49 @@ def RESTCreateInfrastructure():
 
     try:
         content_type = get_media_type('Content-Type')
-        radl_data = bottle.request.body.read()
+        radl_data = bottle.request.body.read().decode("utf-8")
+        tosca_data = None
+
+        async_call = False
+        if "async" in bottle.request.params.keys():
+            str_ctxt = bottle.request.params.get("async").lower()
+            if str_ctxt in ['yes', 'true', '1']:
+                async_call = True
+            elif str_ctxt in ['no', 'false', '0']:
+                async_call = False
+            else:
+                return return_error(400, "Incorrect value in async parameter")
 
         if content_type:
             if "application/json" in content_type:
                 radl_data = parse_radl_json(radl_data)
+            elif "text/yaml" in content_type:
+                tosca_data = Tosca(radl_data)
+                _, radl_data = tosca_data.to_radl()
             elif "text/plain" in content_type or "*/*" in content_type or "text/*" in content_type:
                 content_type = "text/plain"
             else:
                 return return_error(415, "Unsupported Media Type %s" % content_type)
 
-        inf_id = InfrastructureManager.CreateInfrastructure(radl_data, auth)
+        inf_id = InfrastructureManager.CreateInfrastructure(radl_data, auth, async_call)
 
+        # Store the TOSCA document
+        if tosca_data:
+            sel_inf = InfrastructureManager.get_infrastructure(inf_id, auth)
+            sel_inf.extra_info['TOSCA'] = tosca_data
+
+        bottle.response.headers['InfID'] = inf_id
         bottle.response.content_type = "text/uri-list"
         protocol = "http://"
         if Config.REST_SSL:
             protocol = "https://"
 
-        res = protocol + \
-            bottle.request.environ['HTTP_HOST'] + \
-            "/infrastructures/" + str(inf_id)
+        res = protocol + bottle.request.environ['HTTP_HOST'] + "/infrastructures/" + str(inf_id)
 
         return format_output(res, "text/uri-list", "uri")
-    except InvaliddUserException, ex:
+    except InvaliddUserException as ex:
         return return_error(401, "Error Getting Inf. info: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Creating Inf.")
         return return_error(400, "Error Creating Inf.: " + str(ex))
 
@@ -408,17 +479,17 @@ def RESTGetVMInfo(infid=None, vmid=None):
     try:
         radl = InfrastructureManager.GetVMInfo(infid, vmid, auth)
         return format_output(radl, field_name="radl")
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error Getting VM. info: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error Getting VM. info: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error Getting VM. info: " + str(ex))
-    except DeletedVMException, ex:
+    except DeletedVMException as ex:
         return return_error(404, "Error Getting VM. info: " + str(ex))
-    except IncorrectVMException, ex:
+    except IncorrectVMException as ex:
         return return_error(404, "Error Getting VM. info: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Getting VM info")
         return return_error(400, "Error Getting VM info: " + str(ex))
 
@@ -440,23 +511,23 @@ def RESTGetVMProperty(infid=None, vmid=None, prop=None):
             return return_error(404, "Incorrect property %s for VM ID %s" % (prop, vmid))
         else:
             return format_output(info, field_name=prop)
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error Getting VM. property: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error Getting VM. property: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error Getting VM. property: " + str(ex))
-    except DeletedVMException, ex:
+    except DeletedVMException as ex:
         return return_error(404, "Error Getting VM. property: " + str(ex))
-    except IncorrectVMException, ex:
+    except IncorrectVMException as ex:
         return return_error(404, "Error Getting VM. property: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Getting VM property")
         return return_error(400, "Error Getting VM property: " + str(ex))
 
 
-@app.route('/infrastructures/:id', method='POST')
-def RESTAddResource(id=None):
+@app.route('/infrastructures/:infid', method='POST')
+def RESTAddResource(infid=None):
     try:
         auth = get_auth_header()
     except:
@@ -474,18 +545,35 @@ def RESTAddResource(id=None):
                 return return_error(400, "Incorrect value in context parameter")
 
         content_type = get_media_type('Content-Type')
-        radl_data = bottle.request.body.read()
+        radl_data = bottle.request.body.read().decode("utf-8")
+        tosca_data = None
+        remove_list = []
 
         if content_type:
             if "application/json" in content_type:
                 radl_data = parse_radl_json(radl_data)
+            elif "text/yaml" in content_type:
+                tosca_data = Tosca(radl_data)
+                auth = InfrastructureManager.check_auth_data(auth)
+                sel_inf = InfrastructureManager.get_infrastructure(infid, auth)
+                # merge the current TOSCA with the new one
+                if isinstance(sel_inf.extra_info['TOSCA'], Tosca):
+                    tosca_data = sel_inf.extra_info['TOSCA'].merge(tosca_data)
+                remove_list, radl_data = tosca_data.to_radl(sel_inf)
             elif "text/plain" in content_type or "*/*" in content_type or "text/*" in content_type:
                 content_type = "text/plain"
             else:
                 return return_error(415, "Unsupported Media Type %s" % content_type)
 
-        vm_ids = InfrastructureManager.AddResource(
-            id, radl_data, auth, context)
+        if remove_list:
+            InfrastructureManager.RemoveResource(infid, remove_list, auth, context)
+
+        vm_ids = InfrastructureManager.AddResource(infid, radl_data, auth, context)
+
+        # Replace the TOSCA document
+        if tosca_data:
+            sel_inf = InfrastructureManager.get_infrastructure(infid, auth)
+            sel_inf.extra_info['TOSCA'] = tosca_data
 
         protocol = "http://"
         if Config.REST_SSL:
@@ -493,16 +581,16 @@ def RESTAddResource(id=None):
         res = []
         for vm_id in vm_ids:
             res.append(protocol + bottle.request.environ[
-                       'HTTP_HOST'] + "/infrastructures/" + str(id) + "/vms/" + str(vm_id))
+                       'HTTP_HOST'] + "/infrastructures/" + str(infid) + "/vms/" + str(vm_id))
 
         return format_output(res, "text/uri-list", "uri-list", "uri")
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error Adding resources: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error Adding resources: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error Adding resources: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Adding resources")
         return return_error(400, "Error Adding resources: " + str(ex))
 
@@ -528,17 +616,17 @@ def RESTRemoveResource(infid=None, vmid=None):
         InfrastructureManager.RemoveResource(infid, vmid, auth, context)
         bottle.response.content_type = "text/plain"
         return ""
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error Removing resources: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error Removing resources: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error Removing resources: " + str(ex))
-    except DeletedVMException, ex:
+    except DeletedVMException as ex:
         return return_error(404, "Error Removing resources: " + str(ex))
-    except IncorrectVMException, ex:
+    except IncorrectVMException as ex:
         return return_error(404, "Error Removing resources: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error Removing resources")
         return return_error(400, "Error Removing resources: " + str(ex))
 
@@ -552,11 +640,14 @@ def RESTAlterVM(infid=None, vmid=None):
 
     try:
         content_type = get_media_type('Content-Type')
-        radl_data = bottle.request.body.read()
+        radl_data = bottle.request.body.read().decode("utf-8")
 
         if content_type:
             if "application/json" in content_type:
                 radl_data = parse_radl_json(radl_data)
+            elif "text/yaml" in content_type:
+                tosca_data = Tosca(radl_data)
+                _, radl_data = tosca_data.to_radl()
             elif "text/plain" in content_type or "*/*" in content_type or "text/*" in content_type:
                 content_type = "text/plain"
             else:
@@ -565,23 +656,23 @@ def RESTAlterVM(infid=None, vmid=None):
         vm_info = InfrastructureManager.AlterVM(infid, vmid, radl_data, auth)
 
         return format_output(vm_info, field_name="radl")
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error modifying resources: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error modifying resources: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error modifying resources: " + str(ex))
-    except DeletedVMException, ex:
+    except DeletedVMException as ex:
         return return_error(404, "Error modifying resources: " + str(ex))
-    except IncorrectVMException, ex:
+    except IncorrectVMException as ex:
         return return_error(404, "Error modifying resources: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error modifying resources")
         return return_error(400, "Error modifying resources: " + str(ex))
 
 
-@app.route('/infrastructures/:id/reconfigure', method='PUT')
-def RESTReconfigureInfrastructure(id=None):
+@app.route('/infrastructures/:infid/reconfigure', method='PUT')
+def RESTReconfigureInfrastructure(infid=None):
     try:
         auth = get_auth_header()
     except:
@@ -597,7 +688,7 @@ def RESTReconfigureInfrastructure(id=None):
                 return return_error(400, "Incorrect vm_list format.")
 
         content_type = get_media_type('Content-Type')
-        radl_data = bottle.request.body.read()
+        radl_data = bottle.request.body.read().decode("utf-8")
 
         if radl_data:
             if content_type:
@@ -610,20 +701,20 @@ def RESTReconfigureInfrastructure(id=None):
         else:
             radl_data = ""
         bottle.response.content_type = "text/plain"
-        return InfrastructureManager.Reconfigure(id, radl_data, auth, vm_list)
-    except DeletedInfrastructureException, ex:
+        return InfrastructureManager.Reconfigure(infid, radl_data, auth, vm_list)
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error reconfiguring infrastructure: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error reconfiguring infrastructure: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error reconfiguring infrastructure: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error reconfiguring infrastructure")
         return return_error(400, "Error reconfiguring infrastructure: " + str(ex))
 
 
-@app.route('/infrastructures/:id/start', method='PUT')
-def RESTStartInfrastructure(id=None):
+@app.route('/infrastructures/:infid/start', method='PUT')
+def RESTStartInfrastructure(infid=None):
     try:
         auth = get_auth_header()
     except:
@@ -631,20 +722,20 @@ def RESTStartInfrastructure(id=None):
 
     try:
         bottle.response.content_type = "text/plain"
-        return InfrastructureManager.StartInfrastructure(id, auth)
-    except DeletedInfrastructureException, ex:
+        return InfrastructureManager.StartInfrastructure(infid, auth)
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error starting infrastructure: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error starting infrastructure: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error starting infrastructure: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error starting infrastructure")
         return return_error(400, "Error starting infrastructure: " + str(ex))
 
 
-@app.route('/infrastructures/:id/stop', method='PUT')
-def RESTStopInfrastructure(id=None):
+@app.route('/infrastructures/:infid/stop', method='PUT')
+def RESTStopInfrastructure(infid=None):
     try:
         auth = get_auth_header()
     except:
@@ -652,20 +743,20 @@ def RESTStopInfrastructure(id=None):
 
     try:
         bottle.response.content_type = "text/plain"
-        return InfrastructureManager.StopInfrastructure(id, auth)
-    except DeletedInfrastructureException, ex:
+        return InfrastructureManager.StopInfrastructure(infid, auth)
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error stopping infrastructure: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error stopping infrastructure: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error stopping infrastructure: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error stopping infrastructure")
         return return_error(400, "Error stopping infrastructure: " + str(ex))
 
 
 @app.route('/infrastructures/:infid/vms/:vmid/start', method='PUT')
-def RESTStartVM(infid=None, vmid=None, prop=None):
+def RESTStartVM(infid=None, vmid=None):
     try:
         auth = get_auth_header()
     except:
@@ -674,23 +765,23 @@ def RESTStartVM(infid=None, vmid=None, prop=None):
     try:
         bottle.response.content_type = "text/plain"
         return InfrastructureManager.StartVM(infid, vmid, auth)
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error starting VM: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error starting VM: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error starting VM: " + str(ex))
-    except DeletedVMException, ex:
+    except DeletedVMException as ex:
         return return_error(404, "Error starting VM: " + str(ex))
-    except IncorrectVMException, ex:
+    except IncorrectVMException as ex:
         return return_error(404, "Error starting VM: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error starting VM")
         return return_error(400, "Error starting VM: " + str(ex))
 
 
 @app.route('/infrastructures/:infid/vms/:vmid/stop', method='PUT')
-def RESTStopVM(infid=None, vmid=None, prop=None):
+def RESTStopVM(infid=None, vmid=None):
     try:
         auth = get_auth_header()
     except:
@@ -699,17 +790,17 @@ def RESTStopVM(infid=None, vmid=None, prop=None):
     try:
         bottle.response.content_type = "text/plain"
         return InfrastructureManager.StopVM(infid, vmid, auth)
-    except DeletedInfrastructureException, ex:
+    except DeletedInfrastructureException as ex:
         return return_error(404, "Error stopping VM: " + str(ex))
-    except IncorrectInfrastructureException, ex:
+    except IncorrectInfrastructureException as ex:
         return return_error(404, "Error stopping VM: " + str(ex))
-    except UnauthorizedUserException, ex:
+    except UnauthorizedUserException as ex:
         return return_error(403, "Error stopping VM: " + str(ex))
-    except DeletedVMException, ex:
+    except DeletedVMException as ex:
         return return_error(404, "Error stopping VM: " + str(ex))
-    except IncorrectVMException, ex:
+    except IncorrectVMException as ex:
         return return_error(404, "Error stopping VM: " + str(ex))
-    except Exception, ex:
+    except Exception as ex:
         logger.exception("Error stopping VM")
         return return_error(400, "Error stopping VM: " + str(ex))
 
@@ -719,8 +810,49 @@ def RESTGeVersion():
     try:
         from IM import __version__ as version
         return format_output(version, field_name="version")
-    except Exception, ex:
+    except Exception as ex:
         return return_error(400, "Error getting IM version: " + str(ex))
+
+
+@app.route('/infrastructures/:infid/vms/:vmid/disks/:disknum/snapshot', method='PUT')
+def RESTCreateDiskSnapshot(infid=None, vmid=None, disknum=None):
+    try:
+        auth = get_auth_header()
+    except:
+        return return_error(401, "No authentication data provided")
+
+    try:
+        bottle.response.content_type = "text/plain"
+
+        if "image_name" in bottle.request.params.keys():
+            image_name = bottle.request.params.get("image_name")
+        else:
+            return return_error(400, "Parameter image_name required.")
+        if "auto_delete" in bottle.request.params.keys():
+            str_auto_delete = bottle.request.params.get("auto_delete").lower()
+            if str_auto_delete in ['yes', 'true', '1']:
+                auto_delete = True
+            elif str_auto_delete in ['no', 'false', '0']:
+                auto_delete = False
+            else:
+                return return_error(400, "Incorrect value in context parameter")
+        else:
+            auto_delete = False
+
+        return InfrastructureManager.CreateDiskSnapshot(infid, vmid, int(disknum), image_name, auto_delete, auth)
+    except DeletedInfrastructureException as ex:
+        return return_error(404, "Error creating snapshot: " + str(ex))
+    except IncorrectInfrastructureException as ex:
+        return return_error(404, "Error creating snapshot: " + str(ex))
+    except UnauthorizedUserException as ex:
+        return return_error(403, "Error creating snapshot: " + str(ex))
+    except DeletedVMException as ex:
+        return return_error(404, "Error creating snapshot: " + str(ex))
+    except IncorrectVMException as ex:
+        return return_error(404, "Error creating snapshot: " + str(ex))
+    except Exception as ex:
+        logger.exception("Error creating snapshot")
+        return return_error(400, "Error creating snapshot: " + str(ex))
 
 
 @app.error(403)

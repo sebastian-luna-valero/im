@@ -19,10 +19,13 @@
 import unittest
 import os
 from multiprocessing import Queue
-from StringIO import StringIO
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
 import time
 
-from IM.ansible.ansible_launcher import AnsibleThread
+from IM.ansible_utils.ansible_launcher import AnsibleThread
 from mock import patch, MagicMock
 
 
@@ -44,7 +47,7 @@ class TestAnsible(unittest.TestCase):
         self.assertEqual(return_code, 0)
         self.assertIn("failed=0", output.getvalue())
         self.assertIn("changed=2", output.getvalue())
-        print output.getvalue()
+        print(output.getvalue())
 
 if __name__ == '__main__':
     unittest.main()

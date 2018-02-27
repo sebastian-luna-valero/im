@@ -15,13 +15,25 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import sys
-from Queue import Queue, Empty
 import threading
-from SimpleXMLRPCServer import SimpleXMLRPCServer
-import SocketServer
 import time
-from timedcall import TimedCall
-from config import Config
+
+try:
+    from Queue import Queue, Empty
+except ImportError:
+    from queue import Queue, Empty
+try:
+    from SimpleXMLRPCServer import SimpleXMLRPCServer
+except ImportError:
+    from xmlrpc.server import SimpleXMLRPCServer
+try:
+    from SocketServer import ThreadingMixIn
+except ImportError:
+    from socketserver import ThreadingMixIn
+
+from IM.timedcall import TimedCall
+from IM.config import Config
+from IM.xmlrpcssl import SSLSimpleXMLRPCServer
 
 
 class RequestQueue(Queue):
@@ -57,7 +69,6 @@ class RequestQueue(Queue):
                 requests_processed = requests_processed + 1
             except Empty:
                 empty = True
-                pass
         return requests_processed
 
     def generic_process_loop(self, callback=None, timeout=0.5, max_requests=-1):
@@ -222,6 +233,12 @@ class Request(object):
         # Se ha terminado de ejecutar, asi que notificamos
         self.__event.set()
 
+    def wake_up(self):
+        """
+        Notificamos para que notifique, aunque no haya terminado
+        """
+        self.__event.set()
+
     def _execute(self):
         """
         Implementa de forma efectiva el procesamiento de la ejecucion
@@ -248,7 +265,7 @@ class AsyncRequest(Request):
         self.__thread.start()
 
 
-class AsyncXMLRPCServer(SocketServer.ThreadingMixIn, SimpleXMLRPCServer):
+class AsyncXMLRPCServer(ThreadingMixIn, SimpleXMLRPCServer):
 
     def serve_forever_in_thread(self):
         """
@@ -264,9 +281,7 @@ class AsyncXMLRPCServer(SocketServer.ThreadingMixIn, SimpleXMLRPCServer):
         self.__thread.start()
 
 if Config.XMLRCP_SSL:
-    from springpython.remoting.xmlrpc import SSLServer
-
-    class AsyncSSLXMLRPCServer(SocketServer.ThreadingMixIn, SSLServer):
+    class AsyncSSLXMLRPCServer(ThreadingMixIn, SSLSimpleXMLRPCServer):
 
         def __init__(self, *args, **kwargs):
             super(AsyncSSLXMLRPCServer, self).__init__(*args, **kwargs)

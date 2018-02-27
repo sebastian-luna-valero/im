@@ -18,22 +18,37 @@
 
 import sys
 import logging
+import logging.handlers
+import logging.config
 import os
 import signal
 import subprocess
 import time
+import argparse
 
 from IM.request import Request, AsyncXMLRPCServer, get_system_queue
 from IM.config import Config
 from IM.InfrastructureManager import InfrastructureManager
+from IM.InfrastructureList import InfrastructureList
 from IM.ServiceRequests import IMBaseRequest
 from IM import __version__ as version
 
 if sys.version_info <= (2, 6):
-    print "Must use python 2.6 or greater"
+    print("Must use python 2.6 or greater")
     sys.exit(1)
 
 logger = logging.getLogger('InfrastructureManager')
+
+
+class ExtraInfoFilter(logging.Filter):
+    """
+    This is a filter which injects extra attributes into the log.
+      * hostname
+    """
+    def filter(self, record):
+        import socket
+        record.hostname = socket.gethostname()
+        return True
 
 
 def WaitRequest(request):
@@ -44,10 +59,8 @@ def WaitRequest(request):
     success = (request.status() == Request.STATUS_PROCESSED)
     return (success, request.get())
 
-"""
-API functions.
-They create the specified request and wait for it.
-"""
+# API functions.
+# They create the specified request and wait for it.
 
 
 def AddResource(inf_id, radl_data, auth_data, context=True):
@@ -106,9 +119,9 @@ def DestroyInfrastructure(inf_id, auth_data):
     return WaitRequest(request)
 
 
-def CreateInfrastructure(radl_data, auth_data):
+def CreateInfrastructure(radl_data, auth_data, async_call=False):
     request = IMBaseRequest.create_request(
-        IMBaseRequest.CREATE_INFRASTRUCTURE, (radl_data, auth_data))
+        IMBaseRequest.CREATE_INFRASTRUCTURE, (radl_data, auth_data, async_call))
     return WaitRequest(request)
 
 
@@ -148,9 +161,9 @@ def GetVMContMsg(inf_id, vm_id, auth_data):
     return WaitRequest(request)
 
 
-def GetInfrastructureContMsg(inf_id, auth_data):
+def GetInfrastructureContMsg(inf_id, auth_data, headeronly=False):
     request = IMBaseRequest.create_request(
-        IMBaseRequest.GET_INFRASTRUCTURE_CONT_MSG, (inf_id, auth_data))
+        IMBaseRequest.GET_INFRASTRUCTURE_CONT_MSG, (inf_id, auth_data, headeronly))
     return WaitRequest(request)
 
 
@@ -177,19 +190,24 @@ def GetVersion():
     return WaitRequest(request)
 
 
+def CreateDiskSnapshot(inf_id, vm_id, disk_num, image_name, auto_delete, auth_data):
+    request = IMBaseRequest.create_request(
+        IMBaseRequest.CREATE_DISK_SNAPSHOT, (inf_id, vm_id, disk_num, image_name, auto_delete, auth_data))
+    return WaitRequest(request)
+
+
 def launch_daemon():
     """
     Launch the IM daemon
     """
-    if os.path.isfile(Config.DATA_FILE) or Config.DATA_DB:
-        InfrastructureManager.load_data()
+    InfrastructureList.init_table()
 
     if Config.XMLRCP_SSL:
         # if specified launch the secure version
         import ssl
         from IM.request import AsyncSSLXMLRPCServer
-        server = AsyncSSLXMLRPCServer(Config.XMLRCP_ADDRESS, Config.XMLRCP_PORT, Config.XMLRCP_SSL_KEYFILE,
-                                      Config.XMLRCP_SSL_CERTFILE, Config.XMLRCP_SSL_CA_CERTS,
+        server = AsyncSSLXMLRPCServer((Config.XMLRCP_ADDRESS, Config.XMLRCP_PORT), keyfile=Config.XMLRCP_SSL_KEYFILE,
+                                      certfile=Config.XMLRCP_SSL_CERTFILE, ca_certs=Config.XMLRCP_SSL_CA_CERTS,
                                       cert_reqs=ssl.CERT_OPTIONAL)
     else:
         # otherwise the standard XML-RPC service
@@ -217,6 +235,7 @@ def launch_daemon():
     server.register_function(StopVM)
     server.register_function(GetInfrastructureState)
     server.register_function(GetVersion)
+    server.register_function(CreateDiskSnapshot)
 
     InfrastructureManager.logger.info(
         '************ Start Infrastructure Manager daemon (v.%s) ************' % version)
@@ -240,22 +259,29 @@ def config_logging():
     try:
         # First look at /etc/im/logging.conf file
         logging.config.fileConfig('/etc/im/logging.conf')
-    except Exception, ex:
-        print ex
+    except Exception as ex:
+        print(ex)
         log_dir = os.path.dirname(Config.LOG_FILE)
         if not os.path.isdir(log_dir):
             os.makedirs(log_dir)
 
         fileh = logging.handlers.RotatingFileHandler(
             filename=Config.LOG_FILE, maxBytes=Config.LOG_FILE_MAX_SIZE, backupCount=3)
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         fileh.setFormatter(formatter)
 
-        try:
-            log_level = eval("logging." + Config.LOG_LEVEL)
-        except:
+        if Config.LOG_LEVEL == "DEBUG":
             log_level = logging.DEBUG
+        elif Config.LOG_LEVEL == "INFO":
+            log_level = logging.INFO
+        elif Config.LOG_LEVEL in ["WARN", "WARNING"]:
+            log_level = logging.WARN
+        elif Config.LOG_LEVEL == "ERROR":
+            log_level = logging.ERROR
+        elif Config.LOG_LEVEL in ["FATAL", "CRITICAL"]:
+            log_level = logging.FATAL
+        else:
+            log_level = logging.WARN
 
         logging.RootLogger.propagate = 0
         logging.root.setLevel(logging.ERROR)
@@ -274,6 +300,18 @@ def config_logging():
         log.setLevel(log_level)
         log.propagate = 0
         log.addHandler(fileh)
+
+    # Add the filter to add extra fields
+    try:
+        filt = ExtraInfoFilter()
+        log = logging.getLogger('ConfManager')
+        log.addFilter(filt)
+        log = logging.getLogger('CloudConnector')
+        log.addFilter(filt)
+        log = logging.getLogger('InfrastructureManager')
+        log.addFilter(filt)
+    except Exception as ex:
+        print(ex)
 
 
 def im_stop():
@@ -306,11 +344,11 @@ def get_childs(parent_id=None):
     if parent_id is None:
         parent_id = os.getpid()
     ps_command = subprocess.Popen("ps -o pid --ppid %d --noheaders" % parent_id, shell=True, stdout=subprocess.PIPE)
-    ps_output = ps_command.stdout.read()
     ps_command.wait()
+    ps_output = str(ps_command.stdout.read())
     childs = ps_output.strip().split("\n")[:-1]
     if childs:
-        res = []
+        res = childs
         for child in childs:
             res.extend(get_childs(int(child)))
         return res
@@ -334,6 +372,15 @@ def signal_int_handler(signal, frame):
     im_stop()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='IM service')
+    parser.add_argument('--version', help='Show IM service version.', dest="version",
+                        action="store_true", default=False)
+    args = parser.parse_args()
+
+    if args.version:
+        print("IM %s" % version)
+        sys.exit(0)
+
     signal.signal(signal.SIGINT, signal_int_handler)
     config_logging()
     launch_daemon()

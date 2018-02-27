@@ -21,6 +21,9 @@ import time
 import logging
 import unittest
 import sys
+import json
+import base64
+
 from mock import Mock, patch, MagicMock
 
 sys.path.append("..")
@@ -32,9 +35,11 @@ Config.MAX_SIMULTANEOUS_LAUNCHES = 2
 
 from IM.VirtualMachine import VirtualMachine
 from IM.InfrastructureManager import InfrastructureManager as IM
+from IM.InfrastructureList import InfrastructureList
 from IM.auth import Authentication
 from radl.radl import RADL, system, deploy, Feature, SoftFeatures
 from radl.radl_parse import parse_radl
+from radl.radl_json import parse_radl as parse_radl_json
 from IM.CloudInfo import CloudInfo
 from IM.connectors.CloudConnector import CloudConnector
 from IM.SSH import SSH
@@ -54,9 +59,9 @@ class TestIM(unittest.TestCase):
 
     def setUp(self):
 
+        Config.DATA_DB = "/tmp/inf.dat"
+        InfrastructureList.load_data()
         IM._reinit()
-        # Patch save_data
-        IM.save_data = staticmethod(lambda *args: None)
 
         ch = logging.StreamHandler(sys.stdout)
         log = logging.getLogger('InfrastructureManager')
@@ -106,10 +111,37 @@ class TestIM(unittest.TestCase):
             res.append((True, vm))
         return res
 
+    def sleep_and_create_vm(self, inf, radl, requested_radl, num_vm, auth_data):
+        res = []
+        time.sleep(5)
+        for _ in range(num_vm):
+            cloud = CloudInfo()
+            cloud.type = "Dummy"
+            vm = VirtualMachine(inf, "1234", cloud, radl, requested_radl)
+            vm.get_ssh = Mock(side_effect=self.get_dummy_ssh)
+            vm.state = VirtualMachine.RUNNING
+            res.append((True, vm))
+        return res
+
     def get_cloud_connector_mock(self, name="MyMock0"):
         cloud = type(name, (CloudConnector, object), {})
         cloud.launch = Mock(side_effect=self.gen_launch_res)
         return cloud
+
+    def gen_token(self, aud=None, exp=None):
+        data = {
+            "sub": "user_sub",
+            "iss": "https://iam-test.indigo-datacloud.eu/",
+            "exp": 1465471354,
+            "iat": 1465467755,
+            "jti": "jti",
+        }
+        if aud:
+            data["aud"] = aud
+        if exp:
+            data["exp"] = int(time.time()) + exp
+        return ("eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.%s.ignored" %
+                base64.urlsafe_b64encode(json.dumps(data).encode("utf-8")).decode("utf-8"))
 
     def test_inf_creation0(self):
         """Create infrastructure with empty RADL."""
@@ -119,7 +151,7 @@ class TestIM(unittest.TestCase):
         IM.DestroyInfrastructure(infId, auth0)
 
     def test_inf_creation1(self):
-        """Create infrastructure with empty RADL."""
+        """Create infrastructure with an incorrect RADL in two cloud providers."""
 
         radl = """"
             network publica (outbound = 'yes')
@@ -159,6 +191,119 @@ class TestIM(unittest.TestCase):
                       " are asked to be deployed in different cloud providers",
                       str(ex.exception))
 
+    def test_inf_creation_addition_clouds(self):
+        """Add resources infrastructure with an incorrect RADL with 2 clouds."""
+
+        radl = """"
+            network publica (outbound = 'yes')
+            network privada ()
+            system front (
+            cpu.arch='x86_64' and
+            cpu.count>=1 and
+            memory.size>=512m and
+            net_interface.0.connection = 'publica' and
+            net_interface.1.connection = 'privada' and
+            disk.0.image.url = 'mock0://linux.for.ev.er' and
+            disk.0.os.credentials.username = 'ubuntu' and
+            disk.0.os.credentials.password = 'yoyoyo' and
+            disk.0.os.name = 'linux'
+            )
+            system wn (
+            cpu.arch='x86_64' and
+            cpu.count>=1 and
+            memory.size>=512m and
+            net_interface.0.connection = 'privada' and
+            disk.0.image.url = 'mock0://linux.for.ev.er' and
+            disk.0.os.credentials.username = 'ubuntu' and
+            disk.0.os.credentials.password = 'yoyoyo' and
+            disk.0.os.name = 'linux'
+            )
+            deploy front 1 cloud0
+            deploy wn 1
+        """
+
+        auth0 = self.getAuth([0], [], [("Dummy", 0), ("Dummy", 1)])
+        infId = IM.CreateInfrastructure(radl, auth0)
+
+        radl = """
+            network privada
+            system wn
+            deploy wn 1 cloud1
+        """
+
+        with self.assertRaises(Exception) as ex:
+            _ = IM.AddResource(infId, radl, auth0)
+        self.assertIn("Two deployments that have to be launched in the same cloud provider"
+                      " are asked to be deployed in different cloud providers",
+                      str(ex.exception))
+
+    def test_inf_creation_errors(self):
+        """Create infrastructure with errors"""
+
+        radl = """"
+            network publica (outbound = 'yes')
+            network privada ()
+            system front (
+            net_interface.0.connection = 'publica' and
+            net_interface.1.connection = 'privada' and
+            disk.0.image.url = ['one://localhost/image', 'http://localhost:443/image'] and
+            disk.0.os.credentials.username = 'ubuntu'
+            )
+            system wn (
+            net_interface.0.connection = 'privada' and
+            disk.0.image.url = ['one://localhost/image', 'http://localhost:443/image'] and
+            disk.0.os.credentials.username = 'ubuntu'
+            )
+            deploy front 1
+            deploy wn 1
+        """
+
+        # this case raises an exception
+        auth0 = Authentication([{'type': 'InfrastructureManager', 'username': 'test',
+                                 'password': 'tests'}])
+        with self.assertRaises(Exception) as ex:
+            IM.CreateInfrastructure(radl, auth0)
+
+        self.assertEqual(str(ex.exception), "No cloud provider available")
+
+        # this case must fail with "no concrete system" error
+        auth0 = Authentication([{'id': 'ost', 'type': 'OpenStack', 'username': 'user',
+                                 'password': 'pass', 'tenant': 'ten', 'host': 'localhost:5000'},
+                                {'type': 'InfrastructureManager', 'username': 'test',
+                                 'password': 'tests'}])
+
+        with self.assertRaises(Exception) as ex:
+            IM.CreateInfrastructure(radl, auth0)
+        self.assertIn('Error launching the VMs of type front to cloud ID ost of type OpenStack.'
+                      ' Error, no concrete system to deploy: front in cloud: ost. '
+                      'Check if a correct image is being used', str(ex.exception))
+
+        # this case must work OK
+        auth0 = Authentication([{'id': 'dummy', 'type': 'Dummy'},
+                                {'type': 'InfrastructureManager', 'username': 'test',
+                                 'password': 'tests'}])
+        IM.CreateInfrastructure(radl, auth0)
+
+        Config.MAX_VM_FAILS = 3
+        radl = RADL()
+        radl.add(system("s0", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
+                               Feature("disk.0.os.credentials.username", "=", "user"),
+                               Feature("disk.0.os.credentials.password", "=", "pass")]))
+        radl.add(deploy("s0", 1))
+        cloud = type("MyMock0", (CloudConnector, object), {})
+        cloud.launch = Mock(return_value=[(False, "e1")])
+        cloud.finalize = Mock(return_value=(True, ""))
+        self.register_cloudconnector("Mock", cloud)
+        auth0 = self.getAuth([0], [], [("Mock", 0)])
+
+        with self.assertRaises(Exception) as ex:
+            IM.CreateInfrastructure(str(radl), auth0)
+
+        self.assertIn(("Error launching the VMs of type s0 to cloud ID cloud0 of type Mock. "
+                       "Attempt 1: e1\nAttempt 2: e1\nAttempt 3: e1"), str(ex.exception))
+
+        self.assertEqual(cloud.finalize.call_count, 1)
+
     def test_inf_auth(self):
         """Try to access not owned Infs."""
 
@@ -187,10 +332,16 @@ class TestIM(unittest.TestCase):
         auth0 = self.getAuth([0], [], [("Dummy", 0)])
         infId = IM.CreateInfrastructure("", auth0)
 
-        with self.assertRaises(Exception) as ex:
-            IM.AddResource(infId, str(radl), auth0)
+        vms = IM.AddResource(infId, str(radl), auth0)
 
-        self.assertIn("No username", ex.exception.message)
+        self.assertEqual(vms, [0])
+
+        res = IM.GetInfrastructureState(infId, auth0)
+        self.assertEqual(res['state'], VirtualMachine.FAILED)
+
+        res = IM.GetVMContMsg(infId, 0, auth0)
+        self.assertEqual(res, ("Error launching the VMs of type s0 to cloud ID cloud0 of type Dummy."
+                               " No username for deploy: s0\n"))
 
         IM.DestroyInfrastructure(infId, auth0)
 
@@ -237,7 +388,7 @@ class TestIM(unittest.TestCase):
         """Deploy n independent virtual machines."""
 
         n = 20  # Machines to deploy
-        Config.MAX_SIMULTANEOUS_LAUNCHES = n / 2  # Test the pool
+        Config.MAX_SIMULTANEOUS_LAUNCHES = int(n / 2)  # Test the pool
         radl = RADL()
         radl.add(system("s0", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
                                Feature("disk.0.os.credentials.username", "=", "user"),
@@ -289,19 +440,18 @@ class TestIM(unittest.TestCase):
             self.assertEqual(call[3], 1)
         IM.DestroyInfrastructure(infId, auth0)
 
-    def test_inf_addresources3(self):
+    @patch('IM.VMRC.Client')
+    def test_inf_addresources3(self, suds_cli):
         """Test cloud selection."""
 
         n0, n1 = 2, 5  # Machines to deploy
         radl = RADL()
         radl.add(system("s0", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
-                               SoftFeatures(
-                                   10, [Feature("memory.size", "<=", 500)]),
+                               SoftFeatures(10, [Feature("memory.size", "<=", 500)]),
                                Feature("disk.0.os.credentials.username", "=", "user"),
                                Feature("disk.0.os.credentials.password", "=", "pass")]))
         radl.add(system("s1", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
-                               SoftFeatures(
-                                   10, [Feature("memory.size", ">=", 800)]),
+                               SoftFeatures(10, [Feature("memory.size", ">=", 800)]),
                                Feature("disk.0.os.credentials.username", "=", "user"),
                                Feature("disk.0.os.credentials.password", "=", "pass")]))
         radl.add(deploy("s0", n0))
@@ -327,7 +477,86 @@ class TestIM(unittest.TestCase):
             self.assertEqual(call[3], 1)
         IM.DestroyInfrastructure(infId, auth0)
 
-    def test_inf_cloud_order(self):
+    def test_inf_addresources_parallel(self):
+        """Deploy parallel virtual machines."""
+
+        radl = """"
+            network publica (outbound = 'yes')
+            network privada ()
+
+            system front (
+            cpu.arch='x86_64' and
+            cpu.count>=1 and
+            memory.size>=512m and
+            net_interface.0.connection = 'publica' and
+            net_interface.1.connection = 'privada' and
+            disk.0.image.url = 'mock0://linux.for.ev.er' and
+            disk.0.os.credentials.username = 'ubuntu' and
+            disk.0.os.credentials.password = 'yoyoyo' and
+            disk.0.os.name = 'linux'
+            )
+
+            system wn (
+            cpu.arch='x86_64' and
+            cpu.count>=1 and
+            memory.size>=512m and
+            net_interface.0.connection = 'privada' and
+            disk.0.image.url = 'mock0://linux.for.ev.er' and
+            disk.0.os.credentials.username = 'ubuntu' and
+            disk.0.os.credentials.password = 'yoyoyo' and
+            disk.0.os.name = 'linux'
+            )
+
+            deploy front 1
+            deploy wn 3
+            deploy wn 2
+        """
+        cloud = type("MyMock0", (CloudConnector, object), {})
+        cloud.launch = Mock(side_effect=self.sleep_and_create_vm)
+        self.register_cloudconnector("Mock", cloud)
+        auth0 = self.getAuth([0], [], [("Mock", 0)])
+        infId = IM.CreateInfrastructure("", auth0)
+
+        # in this case it will take aprox 15 secs
+        before = int(time.time())
+        Config.MAX_SIMULTANEOUS_LAUNCHES = 1
+        vms = IM.AddResource(infId, str(radl), auth0)
+        delay = int(time.time()) - before
+        self.assertLess(delay, 17)
+        self.assertGreater(delay, 14)
+
+        self.assertEqual(vms, [0, 1, 2, 3, 4, 5])
+        self.assertEqual(cloud.launch.call_count, 3)
+        self.assertEqual(cloud.launch.call_args_list[0][0][3], 1)
+        self.assertEqual(cloud.launch.call_args_list[1][0][3], 3)
+        self.assertEqual(cloud.launch.call_args_list[2][0][3], 2)
+
+        cloud = type("MyMock0", (CloudConnector, object), {})
+        cloud.launch = Mock(side_effect=self.sleep_and_create_vm)
+        self.register_cloudconnector("Mock", cloud)
+
+        # in this case it will take aprox 5 secs
+        before = int(time.time())
+        Config.MAX_SIMULTANEOUS_LAUNCHES = 3  # Test the pool
+        vms = IM.AddResource(infId, str(radl), auth0)
+        delay = int(time.time()) - before
+        # self.assertLess(delay, 17)
+        # self.assertGreater(delay, 14)
+        self.assertLess(delay, 7)
+        self.assertGreater(delay, 4)
+        Config.MAX_SIMULTANEOUS_LAUNCHES = 1
+
+        self.assertEqual(vms, [6, 7, 8, 9, 10, 11])
+        self.assertEqual(cloud.launch.call_count, 3)
+        total = cloud.launch.call_args_list[0][0][3]
+        total += cloud.launch.call_args_list[1][0][3]
+        total += cloud.launch.call_args_list[2][0][3]
+        self.assertEqual(total, 6)
+
+        IM.DestroyInfrastructure(infId, auth0)
+
+    @patch('IM.VMRC.Client')
+    def test_inf_cloud_order(self, suds_cli):
         """Test cloud selection in base of the auth data order."""
 
         n0, n1 = 1, 1  # Machines to deploy
@@ -413,13 +642,26 @@ class TestIM(unittest.TestCase):
         parsed_radl_info = parse_radl(str(radl_info))
         self.assertEqual(parsed_radl_info.systems[0].getValue("state"), "running")
 
+        radl_info = IM.GetVMInfo(infId, "0", auth0, True)
+        parsed_radl_info = parse_radl_json(radl_info)
+        self.assertEqual(parsed_radl_info.systems[0].getValue("state"), "running")
+
         state = IM.GetVMProperty(infId, "0", "state", auth0)
         self.assertEqual(state, "running")
 
         contmsg = IM.GetVMContMsg(infId, "0", auth0)
         self.assertEqual(contmsg, "")
 
+        InfrastructureList.infrastructure_list[infId].cont_out = "Header"
+        InfrastructureList.infrastructure_list[infId].vm_list[0].cloud_connector = MagicMock()
+        InfrastructureList.infrastructure_list[infId].vm_list[0].cloud_connector.error_messages = "TESTMSG"
         contmsg = IM.GetInfrastructureContMsg(infId, auth0)
+        header_contmsg = IM.GetInfrastructureContMsg(infId, auth0, True)
+        InfrastructureList.infrastructure_list[infId].vm_list[0].cloud_connector = None
+
+        self.assertIn("TESTMSG", contmsg)
+        self.assertNotIn("TESTMSG", header_contmsg)
+        self.assertIn("Header", header_contmsg)
 
         state = IM.GetInfrastructureState(infId, auth0)
         self.assertEqual(state["state"], "running")
@@ -431,17 +673,20 @@ class TestIM(unittest.TestCase):
 
         IM.DestroyInfrastructure(infId, auth0)
 
-    def test_get_inf_state(self):
+    @patch('IM.InfrastructureList.InfrastructureList.get_inf_ids')
+    def test_get_inf_state(self, get_inf_ids):
         """
         Test GetInfrastructureState.
         """
         auth0 = self.getAuth([0], [], [("Dummy", 0)])
 
         inf = MagicMock()
-        IM.infrastructure_list = {"1": inf}
+        get_inf_ids.return_value = ["1"]
+        InfrastructureList.infrastructure_list = {"1": inf}
         inf.id = "1"
         inf.auth = auth0
         inf.deleted = False
+        inf.has_expired.return_value = False
         vm1 = MagicMock()
         vm1.im_id = 0
         vm1.state = VirtualMachine.RUNNING
@@ -505,17 +750,35 @@ class TestIM(unittest.TestCase):
         infId = IM.CreateInfrastructure(str(radl), auth0)
 
         radl = RADL()
+        radl.add(system("s1", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
+                               Feature("disk.0.os.credentials.username", "=", "user"),
+                               Feature("cpu.count", "=", 1),
+                               Feature("memory.size", "=", 512, "M"),
+                               Feature("disk.0.os.credentials.password", "=", "pass")]))
         radl.add(system("s0", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
                                Feature("disk.0.os.credentials.username", "=", "user"),
                                Feature("cpu.count", "=", 2),
                                Feature("memory.size", "=", 1024, "M"),
                                Feature("disk.0.os.credentials.password", "=", "pass")]))
+        radl.add(deploy("s1", 1))
         radl.add(deploy("s0", 1))
 
         radl_info = IM.AlterVM(infId, "0", str(radl), auth0)
         parsed_radl_info = parse_radl(str(radl_info))
         self.assertEqual(parsed_radl_info.systems[0].getValue("cpu.count"), 2)
         self.assertEqual(parsed_radl_info.systems[0].getFeature('memory.size').getValue('M'), 1024)
+
+        radl = RADL()
+        radl.add(system("s1", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
+                               Feature("disk.0.os.credentials.username", "=", "user"),
+                               Feature("cpu.count", "=", 2),
+                               Feature("memory.size", "=", 1024, "M"),
+                               Feature("disk.0.os.credentials.password", "=", "pass")]))
+        radl.add(deploy("s1", 1))
+
+        with self.assertRaises(Exception) as ex:
+            IM.AlterVM(infId, "0", str(radl), auth0)
+        self.assertEqual(str(ex.exception), 'Incorrect RADL no system with name s0 provided.')
 
         IM.DestroyInfrastructure(infId, auth0)
 
@@ -558,6 +821,30 @@ class TestIM(unittest.TestCase):
 
         IM.DestroyInfrastructure(new_inf_id, auth0)
 
+    def test_create_disk_snapshot(self):
+        """Test CreateDiskSnapshot """
+        radl = RADL()
+        radl.add(system("s0", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
+                               Feature("disk.0.os.credentials.username", "=", "user"),
+                               Feature("disk.0.os.credentials.password", "=", "pass")]))
+        radl.add(deploy("s0", 1))
+
+        new_url = "mock0://linux.for.ev.er/test"
+
+        cloud0 = self.get_cloud_connector_mock("MyMock0")
+        cloud0.create_snapshot = Mock(return_value=(True, new_url))
+        self.register_cloudconnector("Mock0", cloud0)
+        auth0 = self.getAuth([0], [], [("Mock0", 0)])
+
+        infId = IM.CreateInfrastructure(str(radl), auth0)
+
+        InfrastructureList.infrastructure_list[infId].vm_list[0].cloud_connector = cloud0
+
+        res = IM.CreateDiskSnapshot(infId, 0, 0, "test", True, auth0)
+        self.assertEqual(res, new_url)
+
+        self.assertEqual(cloud0.create_snapshot.call_count, 1)
+
     def test_contextualize(self):
         """Test Contextualization process"""
         radl = """"
@@ -568,6 +855,7 @@ class TestIM(unittest.TestCase):
             cpu.count>=1 and
             memory.size>=512m and
             net_interface.0.connection = 'publica' and
+            net_interface.0.dns_name = 'test' and
             net_interface.0.ip = '10.0.0.1' and
             disk.0.image.url = 'mock0://linux.for.ev.er' and
             disk.0.os.credentials.username = 'ubuntu' and
@@ -580,6 +868,29 @@ class TestIM(unittest.TestCase):
             disk.0.applications contains (name = 'ansible.modules.micafer.hadoop') and
             disk.0.applications contains (name='gmetad') and
             disk.0.applications contains (name='wget')
+            )
+
+configure step1 (
+@begin
+---
+  - tasks:
+      - shell:  echo "Hi"
+
+@end
+)
+
+configure step2 (
+@begin
+---
+  - tasks:
+      - shell:  echo "Hi"
+
+@end
+)
+
+            contextualize (
+                system front configure step1 step 1
+                system front configure step2 step 2
             )
 
             deploy front 1
@@ -597,16 +908,16 @@ class TestIM(unittest.TestCase):
 
         infId = IM.CreateInfrastructure(str(radl), auth0)
 
-        time.sleep(10)
+        time.sleep(15)
 
         state = IM.GetInfrastructureState(infId, auth0)
         self.assertEqual(state["state"], "unconfigured")
 
-        IM.infrastructure_list[infId].ansible_configured = True
-        IM.infrastructure_list[infId].vm_list[0].get_ctxt_log = MagicMock()
-        IM.infrastructure_list[infId].vm_list[0].get_ctxt_log.return_value = "OK"
-
         IM.Reconfigure(infId, "", auth0)
+
+        InfrastructureList.infrastructure_list[infId].ansible_configured = True
+        InfrastructureList.infrastructure_list[infId].vm_list[0].get_ctxt_log = MagicMock()
+        InfrastructureList.infrastructure_list[infId].vm_list[0].get_ctxt_log.return_value = "OK"
 
         time.sleep(5)
 
@@ -618,23 +929,187 @@ class TestIM(unittest.TestCase):
 
         IM.DestroyInfrastructure(infId, auth0)
 
-    @patch('IM.InfrastructureManager.DataBase.connect')
-    @patch('IM.InfrastructureManager.DataBase.table_exists')
-    @patch('IM.InfrastructureManager.DataBase.select')
-    @patch('IM.InfrastructureManager.DataBase.execute')
-    def test_db(self, execute, select, table_exists, connect):
+    @patch('requests.request')
+    def test_check_oidc_invalid_token(self, request):
+        im_auth = {"token": self.gen_token()}
 
-        table_exists.return_value = True
-        select.return_value = [["1", "", read_file_as_string("../files/data.pkl")]]
-        execute.return_value = True
+        Config.OIDC_ISSUERS = ["https://iam-test.indigo-datacloud.eu/"]
+        with self.assertRaises(Exception) as ex:
+            IM.check_oidc_token(im_auth)
+        self.assertEqual(str(ex.exception),
+                         'Invalid InfrastructureManager credentials. OIDC auth Token expired.')
 
-        res = IM.get_data_from_db("mysql://username:password@server/db_name")
-        self.assertEqual(len(res), 1)
+        im_auth_aud = {"token": self.gen_token(aud="test1,test2")}
 
+        Config.OIDC_AUDIENCE = "test"
+        with self.assertRaises(Exception) as ex:
+            IM.check_oidc_token(im_auth_aud)
+        self.assertEqual(str(ex.exception),
+                         'Invalid InfrastructureManager credentials. Audience not accepted.')
+
+        Config.OIDC_AUDIENCE = "test2"
+        with self.assertRaises(Exception) as ex:
+            IM.check_oidc_token(im_auth_aud)
+        self.assertEqual(str(ex.exception),
+                         'Invalid InfrastructureManager credentials. OIDC auth Token expired.')
+        Config.OIDC_AUDIENCE = None
+
+        Config.OIDC_SCOPES = ["scope1", "scope2"]
+        Config.OIDC_CLIENT_ID = "client"
+        Config.OIDC_CLIENT_SECRET = "secret"
+        response = MagicMock()
+        response.status_code = 200
+        response.text = '{ "scope": "profile scope1" }'
+        request.return_value = response
+        with self.assertRaises(Exception) as ex:
+            IM.check_oidc_token(im_auth_aud)
+        self.assertEqual(str(ex.exception),
+                         'Invalid InfrastructureManager credentials. '
+                         'Scopes scope1 scope2 not in introspection scopes: profile scope1')
+
+        response.status_code = 200
+        response.text = '{ "scope": "address profile scope1 scope2" }'
+        request.return_value = response
+        with self.assertRaises(Exception) as ex:
+            IM.check_oidc_token(im_auth_aud)
+        self.assertEqual(str(ex.exception),
+                         'Invalid InfrastructureManager credentials. '
+                         'OIDC auth Token expired.')
+
+        Config.OIDC_SCOPES = []
+        Config.OIDC_CLIENT_ID = None
+        Config.OIDC_CLIENT_SECRET = None
+
+        Config.OIDC_ISSUERS = ["https://other_issuer"]
+
+        with self.assertRaises(Exception) as ex:
+            IM.check_oidc_token(im_auth)
+        self.assertEqual(str(ex.exception),
+                         "Invalid InfrastructureManager credentials. Issuer not accepted.")
+
+    @patch('IM.InfrastructureManager.OpenIDClient')
+    def test_check_oidc_valid_token(self, openidclient):
+        im_auth = {"token": (self.gen_token())}
+
+        user_info = json.loads(read_file_as_string('../files/iam_user_info.json'))
+
+        openidclient.is_access_token_expired.return_value = False, "Valid Token for 100 seconds"
+        openidclient.get_user_info_request.return_value = True, user_info
+
+        Config.OIDC_ISSUERS = ["https://iam-test.indigo-datacloud.eu/"]
+        Config.OIDC_AUDIENCE = None
+
+        IM.check_oidc_token(im_auth)
+
+        self.assertEqual(im_auth['username'], "micafer")
+        self.assertEqual(im_auth['password'], "https://iam-test.indigo-datacloud.eu/sub")
+
+    def test_db(self):
+        """ Test DB data access """
         inf = InfrastructureInfo()
         inf.id = "1"
-        success = IM.save_data_to_db("mysql://username:password@server/db_name", {"1": inf})
+        inf.auth = self.getAuth([0], [], [("Dummy", 0)])
+        cloud = CloudInfo()
+        cloud.type = "Dummy"
+        radl = RADL()
+        radl.add(system("s0", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er")]))
+        radl.add(deploy("s0", 1))
+        vm1 = VirtualMachine(inf, "1", cloud, radl, radl, None, 1)
+        vm2 = VirtualMachine(inf, "2", cloud, radl, radl, None, 2)
+        inf.vm_list = [vm1, vm2]
+        inf.vm_master = vm1
+        # first create the DB table
+        Config.DATA_DB = "sqlite:///tmp/ind.dat"
+        InfrastructureList.load_data()
+
+        success = InfrastructureList._save_data_to_db(Config.DATA_DB, {"1": inf})
         self.assertTrue(success)
+
+        res = InfrastructureList._get_data_from_db(Config.DATA_DB)
+        self.assertEqual(len(res), 1)
+        self.assertEqual(len(res['1'].vm_list), 2)
+        self.assertEqual(res['1'].vm_list[0], res['1'].vm_master)
+        self.assertEqual(res['1'].vm_master.info.systems[0].getValue("disk.0.image.url"), "mock0://linux.for.ev.er")
+        self.assertTrue(res['1'].auth.compare(inf.auth, "InfrastructureManager"))
+
+    def test_inf_remove_two_clouds(self):
+        """ Test remove VMs from 2 cloud providers """
+
+        radl = """"
+            network publica (outbound = 'yes')
+            system front (
+            cpu.arch='x86_64' and
+            cpu.count>=1 and
+            memory.size>=512m and
+            net_interface.0.connection = 'publica' and
+            disk.0.image.url = 'mock0://linux.for.ev.er' and
+            disk.0.os.credentials.username = 'ubuntu' and
+            disk.0.os.credentials.password = 'aaaaa' and
+            disk.0.os.name = 'linux'
+            )
+            contextualize ()
+            deploy front 2 cloud0
+            deploy front 2 cloud1
+        """
+
+        cloud0 = self.get_cloud_connector_mock("MyMock0")
+        cloud0.finalize = Mock(return_value=(True, ""))
+        self.register_cloudconnector("Mock0", cloud0)
+        cloud1 = self.get_cloud_connector_mock("MyMock1")
+        cloud1.finalize = Mock(return_value=(True, ""))
+        self.register_cloudconnector("Mock1", cloud1)
+        auth0 = self.getAuth([0], [], [("Mock1", 1), ("Mock0", 0)])
+
+        infId = IM.CreateInfrastructure(radl, auth0)
+
+        InfrastructureList.infrastructure_list[infId].vm_list[0].cloud.server = "server0"
+        InfrastructureList.infrastructure_list[infId].vm_list[0].cloud_connector = cloud0
+        InfrastructureList.infrastructure_list[infId].vm_list[1].cloud.server = "server0"
+        InfrastructureList.infrastructure_list[infId].vm_list[1].cloud_connector = cloud0
+        InfrastructureList.infrastructure_list[infId].vm_list[2].cloud.server = "server1"
+        InfrastructureList.infrastructure_list[infId].vm_list[2].cloud_connector = cloud1
+        InfrastructureList.infrastructure_list[infId].vm_list[3].cloud.server = "server1"
+        InfrastructureList.infrastructure_list[infId].vm_list[3].cloud_connector = cloud1
+
+        cont = IM.RemoveResource(infId, ['0', '1'], auth0)
+
+        self.assertEqual(cont, 2)
+        self.assertEqual(cloud0.finalize.call_args_list[0][0][1], False)
+        self.assertEqual(cloud0.finalize.call_args_list[1][0][1], True)
+        self.assertEqual(cloud0.finalize.call_count, 2)
+        self.assertEqual(cloud1.finalize.call_count, 0)
+
+        IM.DestroyInfrastructure(infId, auth0)
+
+        self.assertEqual(cloud1.finalize.call_args_list[0][0][1], False)
+        self.assertEqual(cloud1.finalize.call_args_list[1][0][1], True)
+        self.assertEqual(cloud0.finalize.call_count, 2)
+        self.assertEqual(cloud1.finalize.call_count, 2)
+
+    def test_create_async(self):
+        """Create Inf. async"""
+
+        radl = RADL()
+        radl.add(system("s0", [Feature("disk.0.image.url", "=", "mock0://linux.for.ev.er"),
+                               Feature("disk.0.os.credentials.username", "=", "user"),
+                               Feature("disk.0.os.credentials.password", "=", "pass")]))
+        radl.add(deploy("s0", 1))
+
+        cloud = type("MyMock0", (CloudConnector, object), {})
+        cloud.launch = Mock(side_effect=self.sleep_and_create_vm)
+        cloud.finalize = Mock(return_value=(True, ""))
+        self.register_cloudconnector("Mock", cloud)
+        auth0 = self.getAuth([0], [], [("Mock", 0)])
+
+        before = int(time.time())
+        infId = IM.CreateInfrastructure(str(radl), auth0, True)
+        delay = int(time.time()) - before
+
+        self.assertLess(delay, 2)
+
+        time.sleep(6)
+
+        IM.DestroyInfrastructure(infId, auth0)
 
 if __name__ == "__main__":
     unittest.main()

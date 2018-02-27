@@ -18,9 +18,10 @@
 
 import logging
 
-from request import Request, AsyncRequest
-import InfrastructureManager
-from auth import Authentication
+from IM.request import Request, AsyncRequest
+import IM.InfrastructureManager
+from IM.config import Config
+from IM.auth import Authentication
 from IM import __version__ as version
 
 logger = logging.getLogger('InfrastructureManager')
@@ -48,13 +49,13 @@ class IMBaseRequest(AsyncRequest):
     REMOVE_RESOURCE = "RemoveResource"
     START_INFRASTRUCTURE = "StartInfrastructure"
     STOP_INFRASTRUCTURE = "StopInfrastructure"
-    SAVE_DATA = "SaveData"
     START_VM = "StartVM"
     STOP_VM = "StopVM"
     GET_VERSION = "GetVersion"
+    CREATE_DISK_SNAPSHOT = "CreateDiskSnapshot"
 
     @staticmethod
-    def create_request(function, arguments=(), priority=Request.PRIORITY_NORMAL):
+    def create_request(function, arguments=()):
         if function == IMBaseRequest.ADD_RESOURCE:
             return Request_AddResource(arguments)
         elif function == IMBaseRequest.ALTER_VM:
@@ -89,8 +90,6 @@ class IMBaseRequest(AsyncRequest):
             return Request_StartInfrastructure(arguments)
         elif function == IMBaseRequest.STOP_INFRASTRUCTURE:
             return Request_StopInfrastructure(arguments)
-        elif function == IMBaseRequest.SAVE_DATA:
-            return Request_SaveData(arguments)
         elif function == IMBaseRequest.START_VM:
             return Request_StartVM(arguments)
         elif function == IMBaseRequest.STOP_VM:
@@ -99,7 +98,8 @@ class IMBaseRequest(AsyncRequest):
             return Request_GetInfrastructureState(arguments)
         elif function == IMBaseRequest.GET_VERSION:
             return Request_GetVersion(arguments)
-
+        elif function == IMBaseRequest.CREATE_DISK_SNAPSHOT:
+            return Request_CreateDiskSnapshot(arguments)
         else:
             raise NotImplementedError("Function not Implemented")
 
@@ -118,7 +118,7 @@ class IMBaseRequest(AsyncRequest):
             res = self._call_function()
             self.set(res)
             return True
-        except Exception, ex:
+        except Exception as ex:
             logger.exception(self._error_mesage)
             self.set(str(ex))
             return False
@@ -132,9 +132,9 @@ class Request_AddResource(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Adding resources."
         (inf_id, radl_data, auth_data, context) = self.arguments
-        return InfrastructureManager.InfrastructureManager.AddResource(inf_id, radl_data,
-                                                                       Authentication(auth_data),
-                                                                       context)
+        return IM.InfrastructureManager.InfrastructureManager.AddResource(inf_id, radl_data,
+                                                                          Authentication(auth_data),
+                                                                          context)
 
 
 class Request_RemoveResource(IMBaseRequest):
@@ -145,9 +145,9 @@ class Request_RemoveResource(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Removing resources."
         (inf_id, vm_list, auth_data, context) = self.arguments
-        return InfrastructureManager.InfrastructureManager.RemoveResource(inf_id, vm_list,
-                                                                          Authentication(auth_data),
-                                                                          context)
+        return IM.InfrastructureManager.InfrastructureManager.RemoveResource(inf_id, vm_list,
+                                                                             Authentication(auth_data),
+                                                                             context)
 
 
 class Request_GetInfrastructureInfo(IMBaseRequest):
@@ -158,7 +158,7 @@ class Request_GetInfrastructureInfo(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Getting Inf. Info."
         (inf_id, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.GetInfrastructureInfo(inf_id, Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.GetInfrastructureInfo(inf_id, Authentication(auth_data))
 
 
 class Request_GetVMInfo(IMBaseRequest):
@@ -169,7 +169,9 @@ class Request_GetVMInfo(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Getting VM Info."
         (inf_id, vm_id, auth_data) = self.arguments
-        return str(InfrastructureManager.InfrastructureManager.GetVMInfo(inf_id, vm_id, Authentication(auth_data)))
+        return str(IM.InfrastructureManager.InfrastructureManager.GetVMInfo(inf_id, vm_id,
+                                                                            Authentication(auth_data),
+                                                                            Config.VMINFO_JSON))
 
 
 class Request_GetVMProperty(IMBaseRequest):
@@ -180,8 +182,8 @@ class Request_GetVMProperty(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Getting VM Property."
         (inf_id, vm_id, property_name, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.GetVMProperty(inf_id, vm_id, property_name,
-                                                                         Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.GetVMProperty(inf_id, vm_id, property_name,
+                                                                            Authentication(auth_data))
 
 
 class Request_AlterVM(IMBaseRequest):
@@ -192,7 +194,8 @@ class Request_AlterVM(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Changing VM Info."
         (inf_id, vm_id, radl, auth_data) = self.arguments
-        return str(InfrastructureManager.InfrastructureManager.AlterVM(inf_id, vm_id, radl, Authentication(auth_data)))
+        return str(IM.InfrastructureManager.InfrastructureManager.AlterVM(inf_id, vm_id, radl,
+                                                                          Authentication(auth_data)))
 
 
 class Request_DestroyInfrastructure(IMBaseRequest):
@@ -203,7 +206,7 @@ class Request_DestroyInfrastructure(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Destroying Inf."
         (inf_id, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.DestroyInfrastructure(inf_id, Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.DestroyInfrastructure(inf_id, Authentication(auth_data))
 
 
 class Request_StopInfrastructure(IMBaseRequest):
@@ -214,7 +217,7 @@ class Request_StopInfrastructure(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Stopping Inf."
         (inf_id, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.StopInfrastructure(inf_id, Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.StopInfrastructure(inf_id, Authentication(auth_data))
 
 
 class Request_StartInfrastructure(IMBaseRequest):
@@ -225,7 +228,7 @@ class Request_StartInfrastructure(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Starting Inf."
         (inf_id, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.StartInfrastructure(inf_id, Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.StartInfrastructure(inf_id, Authentication(auth_data))
 
 
 class Request_CreateInfrastructure(IMBaseRequest):
@@ -235,8 +238,9 @@ class Request_CreateInfrastructure(IMBaseRequest):
 
     def _call_function(self):
         self._error_mesage = "Error Creating Inf."
-        (radl_data, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.CreateInfrastructure(radl_data, Authentication(auth_data))
+        (radl_data, auth_data, async_call) = self.arguments
+        return IM.InfrastructureManager.InfrastructureManager.CreateInfrastructure(radl_data, Authentication(auth_data),
+                                                                                   async_call)
 
 
 class Request_GetInfrastructureList(IMBaseRequest):
@@ -247,7 +251,7 @@ class Request_GetInfrastructureList(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Getting Inf. List."
         (auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.GetInfrastructureList(Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.GetInfrastructureList(Authentication(auth_data))
 
 
 class Request_Reconfigure(IMBaseRequest):
@@ -258,8 +262,8 @@ class Request_Reconfigure(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Reconfiguring Inf."
         (inf_id, radl_data, auth_data, vm_list) = self.arguments
-        return InfrastructureManager.InfrastructureManager.Reconfigure(inf_id, radl_data,
-                                                                       Authentication(auth_data), vm_list)
+        return IM.InfrastructureManager.InfrastructureManager.Reconfigure(inf_id, radl_data,
+                                                                          Authentication(auth_data), vm_list)
 
 
 class Request_ImportInfrastructure(IMBaseRequest):
@@ -270,7 +274,7 @@ class Request_ImportInfrastructure(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Importing Inf."
         (str_inf, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.ImportInfrastructure(str_inf, Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.ImportInfrastructure(str_inf, Authentication(auth_data))
 
 
 class Request_ExportInfrastructure(IMBaseRequest):
@@ -281,8 +285,8 @@ class Request_ExportInfrastructure(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Exporting Inf."
         (inf_id, delete, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.ExportInfrastructure(inf_id, delete,
-                                                                                Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.ExportInfrastructure(inf_id, delete,
+                                                                                   Authentication(auth_data))
 
 
 class Request_GetInfrastructureRADL(IMBaseRequest):
@@ -293,7 +297,7 @@ class Request_GetInfrastructureRADL(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error getting RADL of the Inf."
         (inf_id, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.GetInfrastructureRADL(inf_id, Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.GetInfrastructureRADL(inf_id, Authentication(auth_data))
 
 
 class Request_GetVMContMsg(IMBaseRequest):
@@ -304,7 +308,7 @@ class Request_GetVMContMsg(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error Getting VM cont msg."
         (inf_id, vm_id, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.GetVMContMsg(inf_id, vm_id, Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.GetVMContMsg(inf_id, vm_id, Authentication(auth_data))
 
 
 class Request_GetInfrastructureContMsg(IMBaseRequest):
@@ -314,20 +318,10 @@ class Request_GetInfrastructureContMsg(IMBaseRequest):
 
     def _call_function(self):
         self._error_mesage = "Error gettinf the Inf. cont msg"
-        (inf_id, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.GetInfrastructureContMsg(inf_id, Authentication(auth_data))
-
-
-class Request_SaveData(IMBaseRequest):
-    """
-    Request class for the save_data function
-    """
-
-    def _call_function(self):
-        self._error_mesage = "Error saving IM data"
-        (inf_id) = self.arguments
-        InfrastructureManager.InfrastructureManager.save_data(inf_id)
-        return ""
+        (inf_id, auth_data, headeronly) = self.arguments
+        return IM.InfrastructureManager.InfrastructureManager.GetInfrastructureContMsg(inf_id,
+                                                                                       Authentication(auth_data),
+                                                                                       headeronly)
 
 
 class Request_StartVM(IMBaseRequest):
@@ -338,7 +332,7 @@ class Request_StartVM(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error starting VM"
         (inf_id, vm_id, auth_data) = self.arguments
-        InfrastructureManager.InfrastructureManager.StartVM(
+        IM.InfrastructureManager.InfrastructureManager.StartVM(
             inf_id, vm_id, Authentication(auth_data))
         return ""
 
@@ -351,7 +345,7 @@ class Request_StopVM(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error stopping VM"
         (inf_id, vm_id, auth_data) = self.arguments
-        InfrastructureManager.InfrastructureManager.StopVM(
+        IM.InfrastructureManager.InfrastructureManager.StopVM(
             inf_id, vm_id, Authentication(auth_data))
         return ""
 
@@ -364,7 +358,7 @@ class Request_GetInfrastructureState(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error getting the Inf. state"
         (inf_id, auth_data) = self.arguments
-        return InfrastructureManager.InfrastructureManager.GetInfrastructureState(inf_id, Authentication(auth_data))
+        return IM.InfrastructureManager.InfrastructureManager.GetInfrastructureState(inf_id, Authentication(auth_data))
 
 
 class Request_GetVersion(IMBaseRequest):
@@ -375,3 +369,15 @@ class Request_GetVersion(IMBaseRequest):
     def _call_function(self):
         self._error_mesage = "Error getting IM service version"
         return version
+
+
+class Request_CreateDiskSnapshot(IMBaseRequest):
+    """
+    Request class for the CreateDiskSnapshot function
+    """
+
+    def _call_function(self):
+        self._error_mesage = "Error creating disk snapshot"
+        (inf_id, vm_id, disk_num, image_name, auto_delete, auth_data) = self.arguments
+        return IM.InfrastructureManager.InfrastructureManager.CreateDiskSnapshot(inf_id, vm_id, disk_num, image_name,
+                                                                                 auto_delete, Authentication(auth_data))

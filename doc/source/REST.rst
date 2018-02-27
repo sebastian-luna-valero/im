@@ -40,7 +40,7 @@ Next tables summaries the resources and the HTTP methods available.
 | **GET**     | | **Get** the specified property ``property_name``  | | **Get** the specified property ``property_name`` |
 |             | | associated to the machine ``vmId`` in ``infId``.  | | associated to the infrastructure ``infId``.      |
 |             | | It has one special property: ``contmsg``.         | | It has three properties: ``contmsg``, ``radl``,  |
-|             |                                                     | | ``state``.                                       |
+|             |                                                     | | ``state`` and ``outputs``.                       |
 +-------------+-----------------------------------------------------+----------------------------------------------------+
 
 +-------------+-----------------------------------------------+------------------------------------------------+
@@ -48,6 +48,13 @@ Next tables summaries the resources and the HTTP methods available.
 +=============+===============================================+================================================+
 | **PUT**     | | **Stop** the machine ``vmId`` in ``infId``. | | **Start** the machine ``vmId`` in ``infId``. |
 +-------------+-----------------------------------------------+------------------------------------------------+
+
++-------------+--------------------------------------------------------------+
+| HTTP method | /infrastructures/<infId>/vms/<vmId>/disks/<diskNum>/snapshot |
++=============+==============================================================+
+| **PUT**     | | **Create** an snapshot of the disk ``diskNum`` of the      |
+|             | | machine ``vmId`` in ``infId``                              |
++-------------+--------------------------------------------------------------+
 
 The error message returned by the service will depend on the ``Accept`` header of the request:
 
@@ -77,14 +84,19 @@ GET ``http://imserver.com/infrastructures``
     }
 
 POST ``http://imserver.com/infrastructures``
-   :body: ``RADL document``
-   :body Content-type: text/plain or application/json
+   :body: ``RADL or TOSCA document``
+   :body Content-type: text/plain, application/json or text/yaml
+   :input fields: ``async`` (optional)
    :Response Content-type: text/uri-list
    :ok response: 200 OK
    :fail response: 401, 400, 415
 
    Create and configure an infrastructure with the requirements specified in
-   the RADL document of the body contents (in plain RADL or in JSON formats).
+   the RADL (in plain RADL or in JSON formats) or TOSCA document of the body contents.
+   
+   The ``async`` parameter is optional and is a flag to specify if the call will not wait the VMs
+   to be created. Acceptable values: yes, no, true, false, 1 or 0. If not specified the flag is set to False.
+   
    If success, it is returned the URI of the new infrastructure.  
    The result is JSON format has the following format::
 
@@ -110,10 +122,14 @@ GET ``http://imserver.com/infrastructures/<infId>``
 GET ``http://imserver.com/infrastructures/<infId>/<property_name>``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :input fields: ``headeronly`` (optional)
    :fail response: 401, 404, 400, 403
 
    Return property ``property_name`` associated to the infrastructure with ID ``infId``. It has three properties:
-      :``contmsg``: a string with the contextualization message. 
+      :``outputs``: in case of TOSCA documents it will return a JSON object with the outputs of the TOSCA document. 
+      :``contmsg``: a string with the contextualization message. In case of ``headeronly`` flag is set to 'yes',
+                    'true' or '1' only the initial part of the infrastructure contextualization log will be
+                    returned (without any VM contextualization log).
       :``radl``: a string with the original specified RADL of the infrastructure. 
       :``state``: a JSON object with two elements:
       
@@ -123,23 +139,35 @@ GET ``http://imserver.com/infrastructures/<infId>/<property_name>``
    The result is JSON format has the following format::
    
     {
-      ["radl"|"state"|"contmsg"]: <property_value>
+      ["radl"|"state"|"contmsg"|"outputs"]: <property_value>
     }
 
 POST ``http://imserver.com/infrastructures/<infId>``
-   :body: ``RADL document``
-   :body Content-type: text/plain or application/json
+   :body: ``RADL or TOSCA document``
+   :body Content-type: text/plain, application/json or text/yaml
    :input fields: ``context`` (optional)
    :Response Content-type: text/uri-list
    :ok response: 200 OK
    :fail response: 401, 403, 404, 400, 415
 
-   Add the resources specified in the body contents (in plain RADL or in JSON formats)
-   to the infrastructure with ID ``infId``. The RADL restrictions are the same as in
-   :ref:`RPC-XML AddResource <addresource-xmlrpc>`. If success, it is returned
-   a list of URIs of the new virtual machines. The ``context`` parameter is optional and 
-   is a flag to specify if the contextualization step will be launched just after the VM
-   addition. Accetable values: yes, no, true, false, 1 or 0. If not specified the flag is set to True. 
+   Add the resources specified in the body contents (in TOSCA, RADL plain or in JSON formats)
+   to the infrastructure with ID ``infId``. 
+   Using RADL the RADL restrictions are the same as in :ref:`RPC-XML AddResource <addresource-xmlrpc>`.
+   
+   Using TOSCA as input this method can be used to add or remove resources depending on the number of
+   resources specified in the new TOSCA document sent. If new nodes are added in the body compared with the
+   last TOSCA sent to the IM, these new nodes will be added. For example an infrastructure has been created
+   with this TOSCA document: `tosca_create.yml <https://github.com/grycap/im/blob/master/test/files/tosca_create.yml>`_
+   it launches one DB server and one Web server. If this TOSCA document is sent as body of this POST function: 
+   `tosca_add.yml <https://github.com/grycap/im/blob/master/test/files/tosca_add.yml>`_, a new web server will be
+   added as the number of web servers has been increased to two (``count`` parameter of ``scalable`` capability).
+   However if this document is sent after the node addition (the number of web servers will be two):
+   `tosca_remove.yml <https://github.com/grycap/im/blob/master/test/files/tosca_remove.yml>`_
+   , a web server (the VM with the ID ``2`` as specified in the ``removal_list`` parameter) will be removed.
+
+   If success, it is returned a list of URIs of the new virtual machines. The ``context`` parameter is
+   optional and is a flag to specify if the contextualization step will be launched just after the VM
+   addition. Acceptable values: yes, no, true, false, 1 or 0. If not specified the flag is set to True. 
    The result is JSON format has the following format::
 
     {
@@ -250,7 +278,7 @@ DELETE ``http://imserver.com/infrastructures/<infId>/vms/<vmId>``
    infrastructure with ID ``infId``. If  ``vmId`` is a comma separated list of 
    VM IDs, all the VMs of this list will be undeployed.  The ``context`` parameter is optional and 
    is a flag to specify if the contextualization step will be launched just after the VM
-   addition. Accetable values: yes, no, true, false, 1 or 0. If not specified the flag is set to True.
+   addition. Acceptable values: yes, no, true, false, 1 or 0. If not specified the flag is set to True.
    If the operation has been performed successfully the return value is an empty string.
 
 PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/start``
@@ -281,3 +309,18 @@ GET ``http://imserver.com/version``
     {
       "version": "1.4.4"
     }
+
+PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/disks/<diskNum>/snapshot``
+   :Response Content-type: text/plain or application/json
+   :ok response: 200 OK
+   :input fields: ``image_name`` (mandatory), ``auto_delete`` (optional)
+   :fail response: 401, 403, 404, 400
+
+   Create a snapshot of the specified ``diskNum`` in the VM ``vmId``
+   of the infrastructure with ID ``infId`. 
+   
+   The ``autoDelete`` flag
+   specifies that the snapshot will be deleted when the infrastructure is
+   destroyed. If the operation has been performed successfully the return
+   value is the image url of the new created image in IM format
+   (see disk.<diskId>.image.url format in RADL).

@@ -52,7 +52,7 @@ import IM.InfrastructureList
 from IM.LoggerMixin import LoggerMixin
 from IM.VirtualMachine import VirtualMachine
 from IM.SSH import AuthenticationException
-from IM.SSHRetry import SSHRetry
+from IM.SSHRetry import SSHRetry, SSH
 from IM.recipe import Recipe
 from IM.config import Config
 from radl.radl import system, contextualize_item
@@ -362,8 +362,7 @@ class ConfManager(LoggerMixin, threading.Thread):
                 self.log_error("VM with ID %s (%s) does not have an IP!!. "
                                "We cannot launch the ansible process!!" % (str(vm.im_id), vm.id))
             else:
-                remote_dir = Config.REMOTE_CONF_DIR + "/" + \
-                    str(self.inf.id) + "/" + ip + "_" + str(vm.im_id)
+                remote_dir = Config.REMOTE_CONF_DIR + "/" + str(self.inf.id) + "/" + ip + "_" + str(vm.im_id)
                 tmp_dir = tempfile.mkdtemp()
 
                 self.log_info("Create the configuration file for the contextualization agent")
@@ -375,8 +374,7 @@ class ConfManager(LoggerMixin, threading.Thread):
                 # Copy the contextualization agent config file
                 ssh = vm.get_ssh_ansible_master()
                 ssh.sftp_mkdir(remote_dir)
-                ssh.sftp_put(conf_file, remote_dir + "/" +
-                             os.path.basename(conf_file))
+                ssh.sftp_put(conf_file, remote_dir + "/" + os.path.basename(conf_file))
 
                 if vm.configured is None:
                     if len(self.inf.get_vm_list()) > Config.VM_NUM_USE_CTXT_DIST:
@@ -817,8 +815,7 @@ class ConfManager(LoggerMixin, threading.Thread):
                         configured_ok = True
                     else:
                         ssh = self.inf.vm_master.get_ssh(retry=True)
-                        # Activate tty mode to avoid some problems with sudo in
-                        # REL
+                        # Activate tty mode to avoid some problems with sudo in REL
                         ssh.tty = True
 
                         # configuration dir os th emaster node to copy all the
@@ -1115,10 +1112,22 @@ class ConfManager(LoggerMixin, threading.Thread):
                     return False, "VM Failure."
 
                 ip = vm.getPublicIP()
-                if ip is not None:
+                ssh = None
+                if ip:
                     ssh = vm.get_ssh()
                     self.log_info('SSH Connecting with: ' + ip + ' to the VM: ' + str(vm.id))
+                else:
+                    if Config.SSH_PORT > 0:
+                        ip = 'localhost'
+                        ssh = vm.get_ssh()
+                        self.log_info('SSH Connecting with: localhost to the VM: ' + str(vm.id))
+                    else:
+                        self.log_warn('VM ' + str(vm.id) + ' with no IP')
+                        # Update the VM info and wait to have a valid public IP
+                        wait += delay
+                        time.sleep(delay)
 
+                if ssh:
                     try:
                         connected = ssh.test_connectivity(5)
                     except AuthenticationException:
@@ -1136,11 +1145,7 @@ class ConfManager(LoggerMixin, threading.Thread):
                         self.log_info('do not connect, wait ...')
                         wait += delay
                         time.sleep(delay)
-                else:
-                    self.log_warn('VM ' + str(vm.id) + ' with no IP')
-                    # Update the VM info and wait to have a valid public IP
-                    wait += delay
-                    time.sleep(delay)
+
 
         # Timeout, return False
         if ip:

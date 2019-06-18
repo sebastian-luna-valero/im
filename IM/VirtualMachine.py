@@ -696,14 +696,20 @@ class VirtualMachine(LoggerMixin):
         """
         (user, passwd, _, private_key) = self.getCredentialValues()
         ip = self.getPublicIP()
+        port = self.getSSHPort()
         if ip is None:
-            ip = self.getPrivateIP()
+            # if this is the master VM and SSH reverse is activated
+            if self.inf.vm_master and self.inf.vm_master.id == self.id and Config.SSH_PORT > 0:
+                ip = 'localhost'
+                port = self.SSH_REVERSE_BASE_PORT + int(self.inf.num)
+            else:
+                ip = self.getPrivateIP()
         if ip is None:
             return None
         if retry:
-            return SSHRetry(ip, user, passwd, private_key, self.getSSHPort())
+            return SSHRetry(ip, user, passwd, private_key, port)
         else:
-            return SSH(ip, user, passwd, private_key, self.getSSHPort())
+            return SSH(ip, user, passwd, private_key, port)
 
     def is_ctxt_process_running(self):
         """ Return the PID of the running process or None if it is not running """
@@ -969,7 +975,10 @@ class VirtualMachine(LoggerMixin):
                 return SSH(ansible_host.getHost(), user, passwd, private_key)
         else:
             if self.inf.vm_master:
-                return self.inf.vm_master.get_ssh(retry=retry)
+                if self.inf.vm_master.getPublicIP() or Config.SSH_PORT > 0:
+                    return self.inf.vm_master.get_ssh(retry=retry)
+                else:
+                    return None
             else:
                 return None
 
@@ -1018,13 +1027,22 @@ class VirtualMachine(LoggerMixin):
     def getSSHReversePort(self):
         return self.SSH_REVERSE_BASE_PORT + int(self.creation_im_id)
 
-    def get_ssh_command(self):
+    def get_ssh_command(self, host=None):
+        if host:
+            reverse_opt = "-R %d:localhost:22" % (self.SSH_REVERSE_BASE_PORT + int(self.inf.num))
+            return ('sshpass -p%s ssh -N %s -p %s -o "UserKnownHostsFile=/dev/null"'
+                    ' -o "StrictHostKeyChecking=no" %s@%s &' % (Config.SSH_PASSWORD,
+                                                                reverse_opt,
+                                                                Config.SSH_PORT,
+                                                                Config.SSH_USERNAME,
+                                                                host))
+
         ssh = self.get_ssh_ansible_master(retry=False)
         if not ssh:
             return None
 
-        ssh_port = ssh.port
         reverse_opt = "-R %d:localhost:22" % (self.SSH_REVERSE_BASE_PORT + self.creation_im_id)
+        ssh_port = ssh.port
 
         if ssh.private_key:
             filename = "/tmp/%s_%s.pem" % (self.inf.id, self.im_id)

@@ -368,7 +368,7 @@ class CloudConnector(LoggerMixin):
                     return cloud_config
 
         # Only for those VMs with private IP
-        if Config.SSH_REVERSE_TUNNELS and vm and not vm.hasPublicNet():
+        if Config.SSH_REVERSE_TUNNELS and vm:
             if 'packages' not in cloud_config:
                 cloud_config['packages'] = []
             cloud_config['packages'].extend(["curl", "sshpass"])

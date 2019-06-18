@@ -106,6 +106,9 @@ class Config:
     SSH_REVERSE_TUNNELS = True
     ACTIVATE_XMLRPC = True
     FORCE_OIDC_AUTH = False
+    SSH_PASSWORD = ''
+    SSH_USERNAME = ''
+    SSH_PORT = 0
 
 
 config = ConfigParser()
@@ -126,6 +129,12 @@ if 'IM_SINGLE_SITE_ONE_HOST' in os.environ:
     Config.SINGLE_SITE_AUTH_HOST = 'http://%s:2633' % os.environ['IM_SINGLE_SITE_ONE_HOST']
     Config.SINGLE_SITE_IMAGE_URL_PREFIX = 'one://%s/' % os.environ['IM_SINGLE_SITE_ONE_HOST']
 
+if 'SSH_PASSWORD' in os.environ:
+    Config.SSH_PASSWORD = os.environ['SSH_PASSWORD']
+if 'SSH_USERNAME' in os.environ:
+    Config.SSH_USERNAME = os.environ['SSH_USERNAME']
+if 'SSH_PORT' in os.environ:
+    Config.SSH_PORT = int(os.environ['SSH_PORT'])
 
 class ConfigOpenNebula:
     TEMPLATE_CONTEXT = ''

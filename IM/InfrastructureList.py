@@ -51,6 +51,7 @@ class InfrastructureList():
                 raise Exception("Trying to add an existing infrastructure ID.")
             else:
                 InfrastructureList.infrastructure_list[inf.id] = inf
+                inf.num = len(InfrastructureList.infrastructure_list) 
 
     @staticmethod
     def remove_inf(del_inf):
@@ -201,6 +202,8 @@ class InfrastructureList():
                             else:
                                 inf = IM.InfrastructureInfo.InfrastructureInfo.deserialize(data)
                             inf_list[inf.id] = inf
+                            if inf.num == 0:
+                                inf.num = len(inf_list[inf.id]) 
                         except Exception:
                             InfrastructureList.logger.exception(
                                 "ERROR reading infrastructure from database, ignoring it!.")

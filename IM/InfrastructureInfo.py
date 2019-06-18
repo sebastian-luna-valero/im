@@ -105,6 +105,8 @@ class InfrastructureInfo:
         """ Time of the last access to this Inf. """
         self.snapshots = []
         """ List of URLs of snapshots made to this Inf that must be deleted on finalization """
+        self.num = 0
+        """ Internal number of this infrastructure """
 
     def serialize(self):
         with self._lock:
@@ -431,7 +433,7 @@ class InfrastructureInfo:
         max_vms_connected = -1
         for vm in self.get_vm_list():
             vms_connected = -1
-            if vm.getOS() and vm.getOS().lower() == 'linux' and vm.hasPublicNet():
+            if vm.getOS() and vm.getOS().lower() == 'linux' and (vm.hasPublicNet() or Config.SSH_PORT > 0):
                 # check that is connected with other VMs
                 vms_connected = 0
                 for other_vm in self.get_vm_list():

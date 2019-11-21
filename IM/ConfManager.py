@@ -387,11 +387,17 @@ class ConfManager(LoggerMixin, threading.Thread):
                     else:
                         self.log_info("Using ctxt_agent")
                         ctxt_agent_command = "/ctxt_agent.py "
-                    vault_export = ""
                     vault_password = vm.info.systems[0].getValue("vault.password")
+                    vault_password_env = ""
                     if vault_password:
-                        vault_export = "export VAULT_PASS='%s' && " % vault_password
-                    (pid, _, _) = ssh.execute(vault_export + "nohup python " + Config.REMOTE_CONF_DIR + "/" +
+                        vault_password_env = " -e VAULT_PASS='%s'" % vault_password
+
+                    udocker_command = ('udocker --allow-root run -v "/etc/hosts:/etc/hosts" -v '
+                                       '"/var/tmp/.im/:/var/tmp/.im/" -w "/var/tmp/.im/%s" '
+                                       '%s ansible' % (self.inf.id, vault_password_env))
+
+                    (pid, _, _) = ssh.execute("nohup " + udocker_command + " python3 " +
+                                              Config.REMOTE_CONF_DIR + "/" +
                                               str(self.inf.id) + "/" + ctxt_agent_command +
                                               Config.REMOTE_CONF_DIR + "/" + str(self.inf.id) + "/" +
                                               "/general_info.cfg " + remote_dir + "/" + os.path.basename(conf_file) +
@@ -516,9 +522,6 @@ class ConfManager(LoggerMixin, threading.Thread):
                 node_line += ' ansible_port=%d' % vm.getRemoteAccessPort()
                 # For compatibility with Ansible 1.X versions
                 node_line += ' ansible_ssh_port=%d' % vm.getRemoteAccessPort()
-
-                if self.inf.vm_master and vm.id == self.inf.vm_master.id:
-                    node_line += ' ansible_connection=local'
 
                 if vm.getPublicIP():
                     node_line += ' IM_NODE_PUBLIC_IP=' + vm.getPublicIP()
@@ -1371,7 +1374,8 @@ class ConfManager(LoggerMixin, threading.Thread):
                     recipe_out = open(tmp_dir + "/" + ConfManager.MASTER_YAML, 'a')
 
                     recipe_out.write("\n    - name: Delete the %s role\n" % galaxy_name)
-                    recipe_out.write("      file: state=absent path=/etc/ansible/roles/%s\n" % galaxy_name)
+                    recipe_out.write("      command: udocker --allow-root run ansible"
+                                     " rm -rf /etc/ansible/roles/%s\n" % galaxy_name)
 
                     recipe_out.close()
 

@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y gcc git python 
      /usr/local/bin/pip install MySQL-python pyOpenSSL pycrypto xmltodict pymongo && \
      /usr/local/bin/pip install IM==1.8.7 && \
      /usr/local/bin/pip uninstall pip -y && \
+     ansible-galaxy install grycap.docker && \
      apt-get purge -y gcc git python-dev python-pip libmysqld-dev libssl-dev libffi-dev libsqlite3-dev && \
      apt-get autoremove -y && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && rm -rf ~/.cache/
 

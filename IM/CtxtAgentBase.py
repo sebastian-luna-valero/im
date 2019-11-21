@@ -421,13 +421,9 @@ class CtxtAgentBase:
                 yaml_data = yaml.safe_load(f)
 
             galaxy_dependencies = []
-            needs_git = False
             for galaxy_name in general_conf_data['ansible_modules']:
                 if galaxy_name:
                     self.logger.debug("Install %s with ansible-galaxy.", galaxy_name)
-
-                    if galaxy_name.startswith("git"):
-                        needs_git = True
 
                     parts = galaxy_name.split("|")
                     if len(parts) > 1:
@@ -446,22 +442,18 @@ class CtxtAgentBase:
 
                     galaxy_dependencies.append(dep)
 
-            if needs_git:
-                task = {"package": "name=git state=present"}
-                task["name"] = "Install git"
-                task["become"] = "yes"
-                yaml_data[0]['tasks'].append(task)
-
             if galaxy_dependencies:
                 now = str(int(time.time() * 100))
-                filename = "/tmp/galaxy_roles_%s.yml" % now
+                filename = "/var/tmp/.im/galaxy_roles_%s.yml" % now
                 yaml_deps = yaml.safe_dump(galaxy_dependencies, default_flow_style=True)
                 self.logger.debug("Galaxy depencies file: %s" % yaml_deps)
                 task = {"copy": 'dest=%s content="%s"' % (filename, yaml_deps)}
                 task["name"] = "Create YAML file to install the roles with ansible-galaxy"
                 yaml_data[0]['tasks'].append(task)
 
-                task = {"command": "ansible-galaxy install -c -r %s" % filename}
+                udocker_command = ('udocker --allow-root run -v "/etc/hosts:/etc/hosts" -v "/var/tmp/.im/:/var/tmp/.im/"'
+                                   ' -w "%s" ansible' % general_conf_data['conf_dir'])
+                task = {"command": "%s ansible-galaxy install -c -r %s" % (udocker_command, filename)}
                 task["name"] = "Install galaxy roles"
                 task["become"] = "yes"
                 yaml_data[0]['tasks'].append(task)

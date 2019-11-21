@@ -7,6 +7,7 @@ LABEL description="Container image to run ansible"
 RUN apt-get update && \
     apt install -y --no-install-recommends \
     openssh-client \
+    sshpass \
     python3-wheel \
     python3-setuptools \
     python3-dev \

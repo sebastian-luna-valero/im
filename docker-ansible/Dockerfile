@@ -8,15 +8,16 @@ RUN apt-get update && \
     apt install -y --no-install-recommends \
     openssh-client \
     sshpass \
-    python3-wheel \
-    python3-setuptools \
-    python3-dev \
-    python3-pip \
-    python3 \
+    sudo \
+    python-wheel \
+    python-setuptools \
+    python-dev \
+    python-pip \
+    python \
     git \
     gcc && \
-    pip3 install ansible==2.6.20 jmespath scp pywinrm && \
-    apt-get purge -y gcc python3-dev python3-pip python3-wheel python3-setuptools && \
+    pip install ansible==2.6.20 jmespath scp pywinrm && \
+    apt-get purge -y gcc python-dev python-pip python-wheel python-setuptools && \
     apt autoremove -y && \
     apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && rm -rf ~/.cache/
 

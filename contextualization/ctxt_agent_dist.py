@@ -155,35 +155,27 @@ class CtxtAgent(CtxtAgentBase):
             ssh_client.execute("mkdir -p %s" % os.path.dirname(self.vm_conf_data_filename))
             ssh_client.sftp_put(self.vm_conf_data_filename, self.vm_conf_data_filename)
 
-        vault_export = ""
-        if vault_pass:
-            vault_export = "export VAULT_PASS='%s' && " % vault_pass
         pid = None
         vm_dir = os.path.abspath(os.path.dirname(self.vm_conf_data_filename))
         remote_dir = os.path.abspath(os.path.dirname(self.conf_data_filename))
+
+        vault_password_env = ""
+        if vault_pass:
+            vault_password_env = " -e VAULT_PASS='%s'" % vault_pass
+
+        udocker_command = ('udocker --allow-root run -q -v "/etc/hosts:/etc/hosts" -v '
+                            '"/var/tmp/.im/:/var/tmp/.im/" -w "%s" '
+                            '%s ansible ' % (remote_dir, vault_password_env))
+
         try:
-            (pid, _, _) = ssh_client.execute(vault_export + "nohup python " + remote_dir + "/ctxt_agent_dist.py " +
+            (pid, _, _) = ssh_client.execute("nohup " + udocker_command + "python " + remote_dir +
+                                             "/ctxt_agent_dist.py " +
                                              self.conf_data_filename + " " + self.vm_conf_data_filename +
                                              " 1 > " + vm_dir + "/stdout 2> " + vm_dir +
                                              "/stderr < /dev/null & echo -n $!")
         except Exception:
             self.logger.exception('Error launch Ctxt agent on node: %s' % vm['ip'])
         return ssh_client, pid
-
-    @staticmethod
-    def set_ansible_connection_local(general_conf_data, vm):
-        filename = general_conf_data['conf_dir'] + "/hosts"
-        vm_id = vm['ip'] + "_" + str(vm['id'])
-        with open(filename) as f:
-            inventoy_data = ""
-            for line in f:
-                if "ansible_connection=local" in line:
-                    line = line.replace("ansible_connection=local", "")
-                if vm_id in line:
-                    line = line[:-1] + " ansible_connection=local\n"
-                inventoy_data += line
-        with open(filename, 'w+') as f:
-            f.write(inventoy_data)
 
     def get_master_ssh(self, general_conf_data):
         ctxt_vm = None
@@ -439,8 +431,6 @@ class CtxtAgent(CtxtAgentBase):
 
                     if ctxt_vm['os'] != "windows":
                         if local:
-                            # this step is not needed in windows systems
-                            self.set_ansible_connection_local(general_conf_data, ctxt_vm)
                             if ctxt_vm['master']:
                                 # Install ansible modules
                                 playbook = self.install_ansible_modules(general_conf_data, playbook)
@@ -460,8 +450,6 @@ class CtxtAgent(CtxtAgentBase):
                         remote_process = self.LaunchRemoteAgent(ctxt_vm, vault_pass, CtxtAgentBase.PK_FILE,
                                                                 vm_conf_data['changed_pass'])
                     else:
-                        if ctxt_vm['os'] != "windows":
-                            self.set_ansible_connection_local(general_conf_data, ctxt_vm)
                         ansible_thread = self.LaunchAnsiblePlaybook(self.logger, vm_conf_data['remote_dir'],
                                                                     playbook, ctxt_vm, 2,
                                                                     inventory_file, CtxtAgentBase.PK_FILE,

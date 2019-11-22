@@ -451,7 +451,7 @@ class CtxtAgentBase:
                 task["name"] = "Create YAML file to install the roles with ansible-galaxy"
                 yaml_data[0]['tasks'].append(task)
 
-                udocker_command = ('udocker --allow-root run -v "/etc/hosts:/etc/hosts" -v "/var/tmp/.im/:/var/tmp/.im/"'
+                udocker_command = ('udocker -q --allow-root run -v "/etc/hosts:/etc/hosts" -v "/var/tmp/.im/:/var/tmp/.im/"'
                                    ' -w "%s" ansible' % general_conf_data['conf_dir'])
                 task = {"command": "%s ansible-galaxy install -c -r %s" % (udocker_command, filename)}
                 task["name"] = "Install galaxy roles"

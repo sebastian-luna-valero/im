@@ -63,53 +63,39 @@ else
     DISTRO=$(distribution_id)
     case $DISTRO in
         debian)
-            echo "deb http://ppa.launchpad.net/ansible/ansible/ubuntu trusty main" >> /etc/apt/sources.list
-            apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 93C4A3FD7BB9C367
             apt-get update
-            apt-get -y install wget ansible
+            apt-get -y curl
             ;;
         ubuntu)
-            apt-get -y install software-properties-common
-            apt-add-repository -y ppa:ansible/ansible
             apt-get update
-            apt-get -y install wget ansible
+            apt-get -y curl
             ;;
         rhel)
-            yum install -y http://dl.fedoraproject.org/pub/epel/epel-release-latest-$(distribution_major_version).noarch.rpm
-            yum install -y wget ansible
+            yum install -y curl
             ;;
         centos)
-            yum install -y epel-release wget
-            yum install -y ansible
+            yum install -y epel-release curl
             ;;
         fedora)
-            yum install -y wget ansible python2-rpm yum
+            yum install -y curl yum
             ;;
     	*)
             echo "Unsupported distribution: $DISTRO"
             ;;
     esac
+
+  ANSIBLE_VERSION=devel2
+  ANSIBLE_IMAGE=grycap/ansible
+
+  ls /usr/local/bin/udocker || curl https://raw.githubusercontent.com/indigo-dc/udocker/master/udocker.py > /usr/local/bin/udocker
+  chmod u+rx /usr/local/bin/udocker
+  ls $HOME/.udocker || udocker --allow-root install
+  ls $HOME/.udocker/repos/$ANSIBLE_IMAGE/$ANSIBLE_VERSION || udocker --allow-root pull $ANSIBLE_IMAGE:$ANSIBLE_VERSION
+  ls $HOME/.udocker/containers/ansible || udocker --allow-root create --name=ansible $ANSIBLE_IMAGE:$ANSIBLE_VERSION
+
 fi
 
-# Create the config file
-cat > /etc/ansible/ansible.cfg <<EOL
-[defaults]
-transport  = smart
-host_key_checking = False
-nocolor = 1
-become_user = root
-become_method = sudo
-fact_caching = jsonfile
-fact_caching_connection = /var/tmp/facts_cache
-fact_caching_timeout = 86400
-gathering = smart
-[paramiko_connection]
-record_host_keys=False
-[ssh_connection]
-pipelining = True
-EOL
-
-if [ $(which ansible-playbook) ]; then
+if [ $(udocker --allow-root run ansible which ansible) ]; then
 	echo '{"OK" : true}' > $1
 else
 	echo '{"OK" : false}' > $1

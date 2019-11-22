@@ -5,7 +5,7 @@
   gather_facts: false
   vars:
     ANSIBLE_IMAGE: grycap/ansible
-    ANSIBLE_VERSION: devel
+    ANSIBLE_VERSION: devel2
     UDOCKER_VERSION: v1.1.3
   tasks:
     - name: Set Ansible version from env
@@ -49,4 +49,4 @@
       command: udocker --allow-root pull {{ ANSIBLE_IMAGE }}:{{ ANSIBLE_VERSION }} creates="{{ ansible_env.HOME }}/.udocker/repos/{{ ANSIBLE_IMAGE }}/{{ ANSIBLE_VERSION }}"
 
     - name: Create container
-      command: udocker --allow-root create --name=ansible {{ ANSIBLE_IMAGE }}:devel creates="{{ ansible_env.HOME }}/.udocker/containers/ansible"
+      command: udocker --allow-root create --name=ansible {{ ANSIBLE_IMAGE }}:{{ ANSIBLE_VERSION }} creates="{{ ansible_env.HOME }}/.udocker/containers/ansible"

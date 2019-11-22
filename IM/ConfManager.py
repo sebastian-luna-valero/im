@@ -392,11 +392,11 @@ class ConfManager(LoggerMixin, threading.Thread):
                     if vault_password:
                         vault_password_env = " -e VAULT_PASS='%s'" % vault_password
 
-                    udocker_command = ('udocker --allow-root run -v "/etc/hosts:/etc/hosts" -v '
+                    udocker_command = ('udocker -q --allow-root run -v "/etc/hosts:/etc/hosts" -v '
                                        '"/var/tmp/.im/:/var/tmp/.im/" -w "/var/tmp/.im/%s" '
                                        '%s ansible' % (self.inf.id, vault_password_env))
 
-                    (pid, _, _) = ssh.execute("nohup " + udocker_command + " python3 " +
+                    (pid, _, _) = ssh.execute("nohup " + udocker_command + " python " +
                                               Config.REMOTE_CONF_DIR + "/" +
                                               str(self.inf.id) + "/" + ctxt_agent_command +
                                               Config.REMOTE_CONF_DIR + "/" + str(self.inf.id) + "/" +
@@ -1374,7 +1374,7 @@ class ConfManager(LoggerMixin, threading.Thread):
                     recipe_out = open(tmp_dir + "/" + ConfManager.MASTER_YAML, 'a')
 
                     recipe_out.write("\n    - name: Delete the %s role\n" % galaxy_name)
-                    recipe_out.write("      command: udocker --allow-root run ansible"
+                    recipe_out.write("      command: udocker -q --allow-root run ansible"
                                      " rm -rf /etc/ansible/roles/%s\n" % galaxy_name)
 
                     recipe_out.close()

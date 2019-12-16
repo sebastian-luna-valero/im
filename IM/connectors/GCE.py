@@ -31,7 +31,6 @@ except Exception as ex:
     print("WARN: libcloud library not correctly installed. GCECloudConnector will not work!.")
     print(ex)
 
-from .CloudConnector import CloudConnector
 from IM.connectors.LibCloud import LibCloudCloudConnector
 try:
     from urlparse import urlparse
@@ -222,17 +221,7 @@ class GCECloudConnector(LibCloudCloudConnector):
         """
         instance_type_name = radl.getValue('instance_type')
 
-        cpu = 1
-        cpu_op = ">="
-        if radl.getFeature('cpu.count'):
-            cpu = radl.getValue('cpu.count')
-            cpu_op = radl.getFeature('cpu.count').getLogOperator()
-
-        memory = 1
-        memory_op = ">="
-        if radl.getFeature('memory.size'):
-            memory = radl.getFeature('memory.size').getValue('M')
-            memory_op = radl.getFeature('memory.size').getLogOperator()
+        (cpu, cpu_op, memory, memory_op, _, _) = self.get_instance_selectors(radl)
 
         res = None
         for size in sizes:
@@ -241,12 +230,11 @@ class GCECloudConnector(LibCloudCloudConnector):
             if size.price is None:
                 size.price = 9999
             if res is None or (size.price <= res.price or size.ram <= res.ram):
-                str_compare = ""
+                comparison = memory_op(size.ram, memory)
                 if 'guestCpus' in size.extra and size.extra['guestCpus']:
-                    str_compare = "size.extra['guestCpus'] " + cpu_op + " cpu and "
-                str_compare += "size.ram " + memory_op + " memory"
+                    comparison = comparison and cpu_op(size.extra['guestCpus'], cpu)
 
-                if eval(str_compare):
+                if comparison:
                     if not instance_type_name or size.name == instance_type_name:
                         res = size
 
@@ -348,7 +336,7 @@ class GCECloudConnector(LibCloudCloudConnector):
             if inf.id in net_name:
                 firewall_name = "%s-all" % net_name
             else:
-                firewall_name = "%s-%s-all" % (inf.id, net_name)
+                firewall_name = "im-%s-%s-all" % (inf.id, net_name)
             allowed = [{'IPProtocol': 'udp', 'ports': '1-65535'},
                        {'IPProtocol': 'tcp', 'ports': '1-65535'},
                        {'IPProtocol': 'icmp'}]
@@ -366,7 +354,7 @@ class GCECloudConnector(LibCloudCloudConnector):
                 if inf.id in net_name:
                     firewall_name = "%s" % net_name
                 else:
-                    firewall_name = "%s-%s" % (inf.id, net_name)
+                    firewall_name = "im-%s-%s" % (inf.id, net_name)
 
                 outports = public_net.getOutPorts()
                 if outports:
@@ -706,8 +694,7 @@ class GCECloudConnector(LibCloudCloudConnector):
         Delete the FWs
         """
         for gce_fw in driver.ex_list_firewalls():
-            name_prefix = "%s" % vm.inf.id
-            if gce_fw.name.startswith(name_prefix):
+            if vm.inf.id in gce_fw.name:
                 self.log_info("Deleting FW %s." % gce_fw.name)
                 gce_fw.destroy()
 

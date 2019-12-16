@@ -19,6 +19,7 @@ import time
 from netaddr import IPNetwork, IPAddress
 import os.path
 import tempfile
+from libcloud.common.exceptions import BaseHTTPError
 
 try:
     from libcloud.compute.types import Provider
@@ -37,6 +38,7 @@ except ImportError:
     from urllib.parse import urlparse
 from IM.VirtualMachine import VirtualMachine
 from radl.radl import Feature
+from IM.AppDB import AppDB
 
 
 class OpenStackCloudConnector(LibCloudCloudConnector):
@@ -193,30 +195,16 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         """
         instance_type_name = radl.getValue('instance_type')
 
-        cpu = 1
-        cpu_op = ">="
-        if radl.getFeature('cpu.count'):
-            cpu = radl.getValue('cpu.count')
-            cpu_op = radl.getFeature('cpu.count').getLogOperator()
-
-        memory = 1
-        memory_op = ">="
-        if radl.getFeature('memory.size'):
-            memory = radl.getFeature('memory.size').getValue('M')
-            memory_op = radl.getFeature('memory.size').getLogOperator()
-        disk_free = 0
-        disk_free_op = ">="
-        if radl.getValue('disks.free_size'):
-            disk_free = radl.getFeature('disks.free_size').getValue('G')
-            disk_free_op = radl.getFeature('disks.free_size').getLogOperator()
+        (cpu, cpu_op, memory, memory_op, disk_free, disk_free_op) = self.get_instance_selectors(radl, disk_unit="G")
 
         # get the node size with the lowest price, vcpus, memory and disk
         sizes.sort(key=lambda x: (x.price, x.vcpus, x.ram, x.disk))
         for size in sizes:
-            str_compare = "size.ram " + memory_op + " memory"
-            str_compare += " and size.vcpus " + cpu_op + " cpu "
-            str_compare += " and size.disk " + disk_free_op + " disk_free"
-            if eval(str_compare):
+            comparison = cpu_op(size.vcpus, cpu)
+            comparison = comparison and memory_op(size.ram, memory)
+            comparison = comparison and disk_free_op(size.disk, disk_free)
+
+            if comparison:
                 if not instance_type_name or size.name == instance_type_name:
                     return size
 
@@ -227,6 +215,16 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         url = urlparse(str_url)
         protocol = url[0]
         src_host = url[1].split(':')[0]
+
+        if protocol == "appdb":
+            site_url, image_id, msg = AppDB.get_image_data(str_url, "openstack")
+            if not image_id or not site_url:
+                self.log_error(msg)
+                return None
+
+            protocol = "ost"
+            url = urlparse(site_url)
+            src_host = url[1].split(':')[0]
 
         if protocol == "ost" and self.cloud.server == src_host:
             driver = self.get_driver(auth_data)
@@ -323,6 +321,35 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
 
         return success
 
+    def setVolumesInfo(self, vm, node):
+        try:
+            cont = 1
+            if 'volumes_attached' in node.extra and node.extra['volumes_attached']:
+                for vol_info in node.extra['volumes_attached']:
+                    vol_id = vol_info['id']
+                    self.log_debug("Getting Volume info %s" % vol_id)
+                    volume = node.driver.ex_get_volume(vol_id)
+                    disk_size = vm.info.systems[0].getFeature("disk." + str(cont) + ".size").getValue('G')
+                    if disk_size and disk_size != volume.size:
+                        self.log_warn("Volume ID %s does not have the expected size %s != %s" % (vol_id,
+                                                                                                 volume.size,
+                                                                                                 disk_size))
+                        continue
+                    vm.info.systems[0].setValue("disk." + str(cont) + ".size", volume.size, 'G')
+
+                    disk_url = vm.info.systems[0].getValue("disk." + str(cont) + ".image.url")
+                    if disk_url and os.path.basename(disk_url) != vol_id:
+                        self.log_warn("Volume does not have the expected id %s != %s" % (vol_id,
+                                                                                         os.path.basename(disk_url)))
+                    vm.info.systems[0].setValue("disk." + str(cont) + ".image.url", "ost://%s/%s" % (self.cloud.server,
+                                                                                                     volume.id))
+                    if 'attachments' in volume.extra and volume.extra['attachments']:
+                        vm.info.systems[0].setValue("disk." + str(cont) + ".device",
+                                                    os.path.basename(volume.extra['attachments'][0]['device']))
+                    cont += 1
+        except Exception as ex:
+            self.log_warn("Error getting volume info: %s" % ex.args[0])
+
     def updateVMInfo(self, vm, auth_data):
         node = self.get_node_with_id(vm.id, auth_data)
         if node:
@@ -334,6 +361,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
 
             self.addRouterInstance(vm, node.driver)
             self.setIPsFromInstance(vm, node)
+            self.setVolumesInfo(vm, node)
         else:
             self.log_warn("Error updating the instance %s. VM not found." % vm.id)
             return (False, "Error updating the instance %s. VM not found." % vm.id)
@@ -412,6 +440,9 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 for ip in pool.list_floating_ips():
                     if ip.node_id == node.id:
                         ips.append(ip.ip_address)
+        except BaseHTTPError as ex:
+            if ex.code == 404:
+                self.log_warn("Error getting node floating ips. It seems that the site does not support them.")
         except Exception:
             self.log_exception("Error getting node floating ips")
         return ips
@@ -424,6 +455,14 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
            - vm(:py:class:`IM.VirtualMachine`): VM information.
            - node(:py:class:`libcloud.compute.base.Node`): object to connect to EC2 instance.
         """
+
+        # First remove old
+        system = vm.info.systems[0]
+        cont = 0
+        while system.getValue('net_interface.%d.connection' % cont):
+            if system.getValue('net_interface.%d.ip' % cont):
+                system.delValue('net_interface.%d.ip' % cont)
+            cont += 1
 
         if 'addresses' in node.extra:
             public_ips = []
@@ -450,7 +489,6 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
 
             map_nets = self.map_radl_ost_networks(vm, ip_net_map)
 
-            system = vm.info.systems[0]
             i = 0
             ips_assigned = []
             while system.getValue("net_interface." + str(i) + ".connection"):
@@ -513,8 +551,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         if instance_type:
             LibCloudCloudConnector.update_system_info_from_instance(system, instance_type)
             if instance_type.vcpus:
-                system.addFeature(
-                    Feature("cpu.count", "=", instance_type.vcpus), conflict="me", missing="other")
+                system.addFeature(Feature("cpu.count", "=", instance_type.vcpus), conflict="me", missing="other")
 
     @staticmethod
     def get_ost_net(driver, name=None, netid=None):
@@ -546,14 +583,18 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                                                                    for mask in Config.PRIVATE_NET_MASKS]))
                             break
 
-                # If we do not have the IP range try to use the router:external to identify a net as public
-                if 'is_public' not in ost_net.extra:
-                    if 'router:external' in ost_net.extra and ost_net.extra['router:external']:
-                        ost_net.extra['is_public'] = True
-                    elif ost_net.name in pool_names:
-                        # If we do not have any clue assume that if it is
-                        # in the pool it should be a public net
-                        ost_net.extra['is_public'] = True
+        for ost_net in ost_nets:
+            # If we do not have the IP range try to use the router:external to identify a net as public
+            if 'is_public' not in ost_net.extra:
+                if 'router:external' in ost_net.extra and ost_net.extra['router:external']:
+                    ost_net.extra['is_public'] = True
+                elif ost_net.name in pool_names:
+                    # If we do not have any clue assume that if it is
+                    # in the pool it should be a public net
+                    ost_net.extra['is_public'] = True
+                else:
+                    # let's assume that is not public
+                    ost_net.extra['is_public'] = False
 
         return get_subnets, ost_nets
 
@@ -609,16 +650,23 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
 
             # Get the routers associated with public nets
             routers = {}
-            for router in driver.ex_list_routers():
-                if router.extra['external_gateway_info']:
-                    if router.extra['external_gateway_info']['network_id'] in pub_nets:
-                        routers[pub_nets[router.extra['external_gateway_info']['network_id']]] = router
+            try:
+                for router in driver.ex_list_routers():
+                    if router.extra['external_gateway_info']:
+                        if router.extra['external_gateway_info']['network_id'] in pub_nets:
+                            routers[pub_nets[router.extra['external_gateway_info']['network_id']]] = router
+            except Exception as ex:
+                self.log_warn("Error listing routers: %s." % ex.args[0])
 
             # try to select first the router of the net provider id
             if pub_net_provider_id in routers:
                 return routers[pub_net_provider_id]
             else:
-                return routers[list(routers.keys())[0]]
+                if len(routers) > 0:
+                    return routers[list(routers.keys())[0]]
+                else:
+                    self.log_warn("No public router found!.")
+                    return None
 
         except Exception:
             self.log_exception("Error getting public router.")
@@ -860,6 +908,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 system.getValue("disk." + str(cont) + ".image.url")):
             disk_url = system.getValue("disk." + str(cont) + ".image.url")
             disk_device = system.getValue("disk." + str(cont) + ".device")
+            disk_type = system.getValue("disk." + str(cont) + ".type")
             if disk_device:
                 disk_device = "vd%s" % disk_device[-1]
             disk_fstype = system.getValue("disk." + str(cont) + ".fstype")
@@ -887,6 +936,8 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                     'delete_on_termination': True,
                     'volume_size': disk_size
                 }
+                if disk_type:
+                    disk['volume_type'] = disk_type
             if disk_device:
                 disk['device_name'] = disk_device
             res.append(disk)
@@ -898,7 +949,15 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         driver = self.get_driver(auth_data)
 
         system = radl.systems[0]
-        image_id = self.get_image_id(system.getValue("disk.0.image.url"))
+
+        image_url = system.getValue("disk.0.image.url")
+        if urlparse(image_url)[0] == "appdb":
+            _, image_id, msg = AppDB.get_image_data(image_url, "openstack")
+            if not image_id:
+                self.log_error(msg)
+                raise Exception("Error in appdb image: %s" % msg)
+        else:
+            image_id = self.get_image_id(system.getValue("disk.0.image.url"))
         image = driver.get_image(image_id)
 
         instance_type = self.get_instance_type(driver.list_sizes(), system)
@@ -959,7 +1018,10 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
             self.log_info("Creating node")
 
             vm = VirtualMachine(inf, None, self.cloud, radl, requested_radl, self.cloud.getCloudConnector(inf))
+            # to store the dynamically attached volumes
             vm.volumes = []
+            # to store the floating IPs not to be deleted
+            vm.floating_ips = []
             vm.destroy = True
             inf.add_vm(vm)
             cloud_init = self.get_cloud_init_data(radl, vm, public_key, user)
@@ -1025,7 +1087,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         while vm.getRequestedSystem().getValue("net_interface." + str(n) + ".connection"):
             net_conn = vm.getRequestedSystem().getValue('net_interface.' + str(n) + '.connection')
             net = vm.info.get_network_by_id(net_conn)
-            if net.isPublic():
+            if net and net.isPublic():
                 fixed_ip = vm.getRequestedSystem().getValue("net_interface." + str(n) + ".ip")
                 pool_name = net.getValue("provider_id")
                 requested_ips.append((fixed_ip, pool_name))
@@ -1091,9 +1153,14 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 self.log_info("No Floating IP assigned: %s" % msg)
                 return False, msg
 
+            found = False
             if node.driver.ex_list_floating_ip_pools():
                 if fixed_ip:
                     floating_ip = node.driver.ex_get_floating_ip(fixed_ip)
+                    if floating_ip:
+                        found = True
+                    else:
+                        return False, "Fixed IP %s not found." % fixed_ip
                 else:
                     # First try to check if there is a Float IP free to attach to the node
                     found, floating_ip = self.get_floating_ip(pool)
@@ -1110,28 +1177,31 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                             floating_ip.delete()
                             return False, "Error attaching a Floating IP to the node. Private IP returned."
 
-                    self.log_debug(floating_ip)
-                    # sometimes the ip cannot be attached inmediately
-                    # we have to try and wait
-                    cont = 0
-                    retries = 5
-                    delay = 5
-                    attached = False
-                    while not attached and cont < retries:
-                        try:
-                            node.driver.ex_attach_floating_ip_to_node(node, floating_ip)
-                            attached = True
-                        except Exception as atex:
-                            self.log_warn("Error attaching a Floating IP to the node: %s" % atex.args[0])
-                            cont += 1
-                            if cont < retries:
-                                time.sleep(delay)
+                self.log_debug(floating_ip)
+                # sometimes the ip cannot be attached inmediately
+                # we have to try and wait
+                cont = 0
+                retries = 5
+                delay = 5
+                attached = False
+                while not attached and cont < retries:
+                    try:
+                        node.driver.ex_attach_floating_ip_to_node(node, floating_ip)
+                        attached = True
+                    except Exception as atex:
+                        self.log_warn("Error attaching a Floating IP to the node: %s" % atex.args[0])
+                        cont += 1
+                        if cont < retries:
+                            time.sleep(delay)
 
-                    if not attached:
-                        self.log_error("Error attaching a Floating IP to the node.")
-                        self.log_info("We have created it, so release it.")
-                        floating_ip.delete()
-                        return False, "Error attaching a Floating IP to the node."
+                if not attached:
+                    self.log_error("Error attaching a Floating IP to the node.")
+                    self.log_info("We have created it, so release it.")
+                    floating_ip.delete()
+                    return False, "Error attaching a Floating IP to the node."
+
+                if found:
+                    vm.floating_ips.append(floating_ip.ip_address)
                 return True, floating_ip
             else:
                 self.log_error("No pools available.")
@@ -1539,6 +1609,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
             current_public_ip = vm.getPublicIP()
             new_has_public_ip = radl.hasPublicNet(vm.info.systems[0].name)
             if new_has_public_ip and not current_public_ip:
+                self.log_info("Adding Public IP.")
                 for net in radl.networks:
                     if net.isPublic():
                         new_public_net = net.clone()
@@ -1550,22 +1621,13 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 return self.add_elastic_ip_from_pool(vm, node, None, pool_name)
 
             if not new_has_public_ip and current_public_ip:
-                floating_ip = node.driver.get_floating_ip(current_public_ip)
+                floating_ip = node.driver.ex_get_floating_ip(current_public_ip)
+                self.log_info("Removing Public IP: %s." % floating_ip)
                 if node.driver.ex_detach_floating_ip_from_node(node, floating_ip):
                     floating_ip.delete()
 
                     # Remove all public net connections in the Requested RADL
-                    nets_id = [net.id for net in vm.requested_radl.networks if net.isPublic()]
-                    system = vm.requested_radl.systems[0]
-
-                    i = 0
-                    while system.getValue('net_interface.%d.connection' % i):
-                        f = system.getFeature("net_interface.%d.connection" % i)
-                        if f.value in nets_id:
-                            system.delValue('net_interface.%d.connection' % i)
-                            if system.getValue('net_interface.%d.ip' % i):
-                                system.delValue('net_interface.%d.ip' % i)
-                        i += 1
+                    vm.delete_public_nets(vm.requested_radl)
 
                     return True, ""
                 else:
@@ -1574,3 +1636,35 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
             self.log_exception("Error adding/removing new public IP")
             return (False, "Error adding/removing new public IP: " + str(ex))
         return True, ""
+
+    def delete_elastic_ips(self, node, vm):
+        """
+        remove the elastic IPs of a VM
+
+        Arguments:
+           - node(:py:class:`libcloud.compute.base.Node`): node object to attach the volumes.
+           - vm(:py:class:`IM.VirtualMachine`): VM information.
+        """
+        try:
+            no_delete_ips = []
+            if "floating_ips" in vm.__dict__.keys():
+                no_delete_ips = vm.floating_ips
+
+            for floating_ip in node.driver.ex_list_floating_ips():
+                if floating_ip.node_id == node.id:
+                    # remove it from the node
+                    try:
+                        node.driver.ex_detach_floating_ip_from_node(node, floating_ip)
+                    except Exception as ex:
+                        self.log_warn("Error detaching Floating IP: %s. %s" % (floating_ip.ip_address, ex.args[0]))
+                    # if it is in the list do not release it
+                    if floating_ip.ip_address in no_delete_ips:
+                        self.log_debug("Do not remove Floating IP: %s" % floating_ip.ip_address)
+                    else:
+                        self.log_debug("Remove Floating IP: %s" % floating_ip.ip_address)
+                        # delete the ip
+                        floating_ip.delete()
+            return True, ""
+        except Exception as ex:
+            self.log_exception("Error removing Floating IPs to VM ID: " + str(vm.id))
+            return False, "Error removing Floating IPs: %s" % ex.args[0]

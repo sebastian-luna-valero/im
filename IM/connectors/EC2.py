@@ -263,36 +263,20 @@ class EC2CloudConnector(CloudConnector):
         """
         instance_type_name = radl.getValue('instance_type')
 
-        cpu = 1
-        cpu_op = ">="
-        if radl.getFeature('cpu.count'):
-            cpu = radl.getValue('cpu.count')
-            cpu_op = radl.getFeature('cpu.count').getLogOperator()
-
+        (cpu, cpu_op, memory, memory_op, disk_free, disk_free_op) = self.get_instance_selectors(radl, disk_unit="G")
         arch = radl.getValue('cpu.arch', 'x86_64')
 
-        memory = 1
-        memory_op = ">="
-        if radl.getFeature('memory.size'):
-            memory = radl.getFeature('memory.size').getValue('M')
-            memory_op = radl.getFeature('memory.size').getLogOperator()
-
-        disk_free = 0
-        disk_free_op = ">="
-        if radl.getValue('disks.free_size'):
-            disk_free = radl.getFeature('disks.free_size').getValue('G')
-            disk_free_op = radl.getFeature('disks.free_size').getLogOperator()
-
         performance = 0
-        performance_op = ">="
+        performance_op_str = ">="
         if radl.getValue("cpu.performance"):
             cpu_perf = radl.getFeature("cpu.performance")
             # Assume that GCEU = ECU
             if cpu_perf.unit == "ECU" or cpu_perf.unidad == "GCEU":
                 performance = float(cpu_perf.value)
-                performance_op = cpu_perf.getLogOperator()
+                performance_op_str = cpu_perf.getLogOperator()
             else:
                 self.log_warn("Performance unit unknown: " + cpu_perf.unit + ". Ignore it")
+        performance_op = CloudConnector.OPERATORSMAP.get(performance_op_str)
 
         instace_types = self.get_all_instance_types()
 
@@ -300,18 +284,14 @@ class EC2CloudConnector(CloudConnector):
         for instace_type in instace_types:
             # get the instance type with the lowest price
             if res is None or (instace_type.price <= res.price):
-                str_compare = "arch in instace_type.cpu_arch "
-                str_compare += " and instace_type.cores_per_cpu * instace_type.num_cpu " + cpu_op + " cpu "
-                str_compare += " and instace_type.mem " + memory_op + " memory "
-                str_compare += " and instace_type.cpu_perf " + performance_op + " performance"
-                str_compare += " and instace_type.disks * instace_type.disk_space " + disk_free_op + " disk_free"
 
-                # if arch in instace_type.cpu_arch and
-                # instace_type.cores_per_cpu * instace_type.num_cpu >= cpu and
-                # instace_type.mem >= memory and instace_type.cpu_perf >=
-                # performance and instace_type.disks * instace_type.disk_space
-                # >= disk_free:
-                if eval(str_compare):
+                comparison = arch in instace_type.cpu_arch
+                comparison = comparison and cpu_op(instace_type.cores_per_cpu * instace_type.num_cpu, cpu)
+                comparison = comparison and memory_op(instace_type.mem, memory)
+                comparison = comparison and disk_free_op(instace_type.disks * instace_type.disk_space, disk_free)
+                comparison = comparison and performance_op(instace_type.cpu_perf, performance)
+
+                if comparison:
                     if not instance_type_name or instace_type.name == instance_type_name:
                         res = instace_type
 
@@ -646,15 +626,16 @@ class EC2CloudConnector(CloudConnector):
         public_key = system.getValue("disk.0.os.credentials.public_key")
         private_key = system.getValue('disk.0.os.credentials.private_key')
         keypair_name = None
-        if private_key and public_key:
-            # We assume that if the name key is shorter than 128 is a keypair name
-            if len(public_key) < 128:
-                keypair_name = public_key
 
         if not public_key:
             # We must generate them
             (public_key, private_key) = self.keygen()
             system.setValue('disk.0.os.credentials.private_key', private_key)
+
+        # We assume that if the name key is shorter than 128 is a keypair name
+        if len(public_key) < 128:
+            keypair_name = public_key
+            public_key = None
 
         user = system.getValue('disk.0.os.credentials.username')
         if not user:
@@ -668,26 +649,26 @@ class EC2CloudConnector(CloudConnector):
 
         i = 0
         while i < num_vm:
-
-            vm = VirtualMachine(inf, None, self.cloud, radl, requested_radl, self)
-            vm.destroy = True
-            inf.add_vm(vm)
-            user_data = self.get_cloud_init_data(radl, vm, public_key, user)
-
-            bdm = boto.ec2.blockdevicemapping.BlockDeviceMapping(conn)
-            # Force to use magnetic volumes in root device
-            bdm[block_device_name] = boto.ec2.blockdevicemapping.BlockDeviceType(volume_type="standard",
-                                                                                 delete_on_termination=True)
-
-            volumes = self.get_volumes(conn, vm)
-            for device, (size, snapshot_id, disk_type) in volumes.items():
-                bdm[device] = boto.ec2.blockdevicemapping.BlockDeviceType(snapshot_id=snapshot_id,
-                                                                          volume_type=disk_type,
-                                                                          size=size, delete_on_termination=True)
-
-            err_msg = "Launching in region %s with image: %s" % (region_name, ami)
-            err_msg += " in VPC: %s-%s " % (vpc, subnet)
             try:
+                err_msg = "Launching in region %s with image: %s" % (region_name, ami)
+                err_msg += " in VPC: %s-%s " % (vpc, subnet)
+
+                vm = VirtualMachine(inf, None, self.cloud, radl, requested_radl, self)
+                vm.destroy = True
+                inf.add_vm(vm)
+                user_data = self.get_cloud_init_data(radl, vm, public_key, user)
+
+                bdm = boto.ec2.blockdevicemapping.BlockDeviceMapping(conn)
+                # Force to use magnetic volumes in root device
+                bdm[block_device_name] = boto.ec2.blockdevicemapping.BlockDeviceType(volume_type="standard",
+                                                                                     delete_on_termination=True)
+
+                volumes = self.get_volumes(conn, vm)
+                for device, (size, snapshot_id, disk_type) in volumes.items():
+                    bdm[device] = boto.ec2.blockdevicemapping.BlockDeviceType(snapshot_id=snapshot_id,
+                                                                              volume_type=disk_type,
+                                                                              size=size, delete_on_termination=True)
+
                 if spot:
                     self.log_info("Launching a spot instance")
                     err_msg += " a spot instance "
@@ -835,14 +816,26 @@ class EC2CloudConnector(CloudConnector):
             disk_device = "sd%s" % disk_device[-1]
 
             disk_size = None
+            snapshot_id = None
             if disk_url:
-                _, snapshot_id = EC2CloudConnector.getAMIData(disk_url)
-                snapshot = conn.get_all_snapshots([snapshot_id])[0]
-                disk_url = snapshot.id
+                _, elem_id = EC2CloudConnector.getAMIData(disk_url)
+                if elem_id.startswith('snap-'):
+                    snapshot_id = conn.get_all_snapshots([elem_id])[0].id
+                else:
+                    snapshot = conn.get_all_snapshots(filters={'tag:Name': elem_id})
+                    if snapshot:
+                        snapshot_id = snapshot[0].id
+                    else:
+                        raise Exception("No snapshot found with name: %s" % elem_id)
             else:
                 disk_size = vm.info.systems[0].getFeature("disk." + str(cont) + ".size").getValue('G')
 
-            res["/dev/" + disk_device] = (disk_size, disk_url, disk_type)
+            # Set standard as default type
+            if not disk_type:
+                disk_type = "standard"
+                vm.info.systems[0].setValue("disk." + str(cont) + ".type", disk_type)
+
+            res["/dev/" + disk_device] = (disk_size, snapshot_id, disk_type)
             cont += 1
 
         return res
@@ -1412,8 +1405,13 @@ class EC2CloudConnector(CloudConnector):
             if sg.description != "Security group created by the IM":
                 self.log_info("SG %s not created by the IM. Do not delete it." % sg.name)
                 continue
-            for instance in sg.instances():
-                instance.modify_attribute("groupSet", [def_sg_id])
+            try:
+                for instance in sg.instances():
+                    instance.modify_attribute("groupSet", [def_sg_id])
+            except Exception as ex:
+                self.log_warn("Error removing the SG %s from the instance: %s. %s" % (sg.name, instance.id, ex))
+                # try to wait some seconds to free the SGs
+                time.sleep(5)
 
             self.log_info("Remove the SG: " + sg.name)
             try:

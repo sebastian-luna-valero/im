@@ -340,16 +340,11 @@ class TestIM(unittest.TestCase):
         auth0 = self.getAuth([0], [], [("Dummy", 0)])
         infId = IM.CreateInfrastructure("", auth0)
 
-        vms = IM.AddResource(infId, str(radl), auth0)
+        with self.assertRaises(Exception) as ex:
+            vms = IM.AddResource(infId, str(radl), auth0)
 
-        self.assertEqual(vms, [0])
-
-        res = IM.GetInfrastructureState(infId, auth0)
-        self.assertEqual(res['state'], VirtualMachine.FAILED)
-
-        res = IM.GetVMContMsg(infId, 0, auth0)
-        self.assertEqual(res, ("Error launching the VMs of type s0 to cloud ID cloud0 of type Dummy."
-                               " No username for deploy: s0\n"))
+        self.assertEqual(str(ex.exception), ("Error adding VMs: Error launching the VMs of type s0 "
+                                             "to cloud ID cloud0 of type Dummy. No username for deploy: s0\n"))
 
         IM.DestroyInfrastructure(infId, auth0)
 
@@ -530,7 +525,7 @@ class TestIM(unittest.TestCase):
         Config.MAX_SIMULTANEOUS_LAUNCHES = 1
         vms = IM.AddResource(infId, str(radl), auth0)
         delay = int(time.time()) - before
-        self.assertLess(delay, 17)
+        self.assertLess(delay, 19)
         self.assertGreater(delay, 14)
 
         self.assertEqual(vms, [0, 1, 2, 3, 4, 5])
@@ -736,6 +731,7 @@ class TestIM(unittest.TestCase):
         inf.id = "1"
         inf.auth = auth0
         inf.deleted = False
+        inf.deleting = False
         inf.has_expired.return_value = False
         vm1 = MagicMock()
         vm1.im_id = 0
@@ -1130,7 +1126,7 @@ configure step2 (
     def test_inf_auth_with_token(self):
         im_auth = {"token": (self.gen_token())}
         im_auth['username'] = InfrastructureInfo.OPENID_USER_PREFIX + "micafer"
-        im_auth['password'] = "https://iam-test.indigo-datacloud.eu/sub"
+        im_auth['password'] = "https://iam-test.indigo-datacloud.eu/user_sub"
         # Check that a user/pass cred cannot access OpenID ones
         user_auth = Authentication([{'id': 'im', 'type': 'InfrastructureManager',
                                      'username': im_auth['username'],
@@ -1152,12 +1148,22 @@ configure step2 (
         res = inf.is_authorized(user_auth)
         self.assertEqual(res, False)
 
-        user_auth = Authentication([{'id': 'im', 'type': 'InfrastructureManager',
-                                     'username': im_auth['username'],
-                                     'password': im_auth['password'],
-                                     'token': im_auth['token']}])
-        res = inf.is_authorized(user_auth)
+        user_auth1 = Authentication([{'id': 'im', 'type': 'InfrastructureManager',
+                                      'username': im_auth['username'],
+                                      'password': im_auth['password'],
+                                      'token': im_auth['token']}])
+        res = inf.is_authorized(user_auth1)
         self.assertEqual(res, True)
+
+        inf.auth = user_auth1
+        new_token = self.gen_token()
+        user_auth2 = Authentication([{'id': 'im', 'type': 'InfrastructureManager',
+                                      'username': im_auth['username'],
+                                      'password': im_auth['password'],
+                                      'token': new_token}])
+        res = inf.is_authorized(user_auth2)
+        self.assertEqual(res, True)
+        self.assertEqual(inf.auth.getAuthInfo("InfrastructureManager")[0]['token'], new_token)
 
     def test_db(self):
         """ Test DB data access """
@@ -1273,11 +1279,28 @@ configure step2 (
         auth0 = self.getAuth([0])
         infId = IM.CreateInfrastructure("", auth0)
         inf = IM.get_infrastructure(infId, auth0)
-        inf.destroy = Mock(side_effect=Exception())
+        inf.destroy_vms = Mock(side_effect=Exception())
         with self.assertRaises(Exception):
             IM.DestroyInfrastructure(infId, auth0)
         self.assertEqual(inf.deleted, False)
         IM.DestroyInfrastructure(infId, auth0, True)
+        self.assertEqual(inf.deleted, True)
+
+    def sleep_5(self, _):
+        time.sleep(5)
+
+    def test_inf_delete_async(self):
+        """ DestroyInfrastructure async """
+
+        auth0 = self.getAuth([0])
+        infId = IM.CreateInfrastructure("", auth0)
+        inf = IM.get_infrastructure(infId, auth0)
+        inf.destroy_vms = Mock(side_effect=self.sleep_5)
+        IM.DestroyInfrastructure(infId, auth0, False, True)
+        self.assertEqual(inf.deleted, False)
+        state = IM.GetInfrastructureState(infId, auth0)
+        self.assertEqual(state["state"], VirtualMachine.DELETING)
+        time.sleep(10)
         self.assertEqual(inf.deleted, True)
 
     def test_boot_modes(self):

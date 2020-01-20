@@ -80,6 +80,9 @@ class DataBase:
             Returns: True if the connection is established correctly
                      of False in case of errors.
         """
+        if self.connection:
+            return True
+
         uri = urlparse(self.db_url)
         protocol = uri[0]
         if protocol == "mongodb":
@@ -229,6 +232,7 @@ class DataBase:
                     self.connection.client.close()
                 else:
                     self.connection.close()
+                self.connection = None
                 return True
             except Exception:
                 return False

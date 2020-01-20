@@ -1184,10 +1184,10 @@ configure step2 (
         Config.DATA_DB = "sqlite:///tmp/ind.dat"
         InfrastructureList.load_data()
 
-        success = InfrastructureList._save_data_to_db(Config.DATA_DB, {"1": inf})
+        success = InfrastructureList._save_data_to_db({"1": inf})
         self.assertTrue(success)
 
-        res = InfrastructureList._get_data_from_db(Config.DATA_DB)
+        res = InfrastructureList._get_data_from_db()
         self.assertEqual(len(res), 1)
         self.assertEqual(len(res['1'].vm_list), 2)
         self.assertEqual(res['1'].vm_list[0], res['1'].vm_master)

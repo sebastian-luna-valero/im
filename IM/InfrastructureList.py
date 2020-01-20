@@ -41,6 +41,9 @@ class InfrastructureList():
 
     infrastructure_auth = {}
     """Map from string to :py:class:`Authentication`."""
+    
+    data_base = DataBase(Config.DATA_DB)
+    """DataBase object to interact with the DB """
 
     @staticmethod
     def add_infrastructure(inf):
@@ -73,7 +76,7 @@ class InfrastructureList():
                     if inf.is_authorized(auth):
                         inf_ids.append(inf_id)
                 else:
-                    res = InfrastructureList._get_data_from_db(Config.DATA_DB, inf_id, auth)
+                    res = InfrastructureList._get_data_from_db(inf_id, auth)
                     if res:
                         inf = res[inf_id]
                         # store in memory to improve later requests
@@ -95,7 +98,7 @@ class InfrastructureList():
 
         if inf_id in InfrastructureList.get_inf_ids():
             # Load the data from DB:
-            res = InfrastructureList._get_data_from_db(Config.DATA_DB, inf_id)
+            res = InfrastructureList._get_data_from_db(inf_id)
             if res:
                 inf = res[inf_id]
                 InfrastructureList.infrastructure_list[inf_id] = inf
@@ -120,7 +123,7 @@ class InfrastructureList():
         """ Load Data from DB """
         with InfrastructureList._lock:
             try:
-                inf_list = InfrastructureList._get_data_from_db(Config.DATA_DB)
+                inf_list = InfrastructureList._get_data_from_db()
                 InfrastructureList.infrastructure_list = inf_list
             except Exception as ex:
                 InfrastructureList.logger.exception("ERROR loading data. Correct or delete it!!")
@@ -138,8 +141,7 @@ class InfrastructureList():
         """
         with InfrastructureList._lock:
             try:
-                res = InfrastructureList._save_data_to_db(Config.DATA_DB,
-                                                          InfrastructureList.infrastructure_list,
+                res = InfrastructureList._save_data_to_db(InfrastructureList.infrastructure_list,
                                                           inf_id)
                 if not res:
                     InfrastructureList.logger.error("ERROR saving data.\nChanges not stored!!")
@@ -151,7 +153,7 @@ class InfrastructureList():
     @staticmethod
     def init_table():
         """ Creates de database """
-        db = DataBase(Config.DATA_DB)
+        db = InfrastructureList.data_base
         if db.connect():
             if not db.table_exists("inf_list"):
                 InfrastructureList.logger.debug("Creating the IM database!.")
@@ -161,7 +163,6 @@ class InfrastructureList():
                 elif db.db_type == DataBase.SQLITE:
                     db.execute("CREATE TABLE inf_list(id VARCHAR(255) PRIMARY KEY, deleted INTEGER,"
                                " date TIMESTAMP, data LONGBLOB)")
-                db.close()
             return True
         else:
             InfrastructureList.logger.error("ERROR connecting with the database!.")
@@ -169,14 +170,14 @@ class InfrastructureList():
         return False
 
     @staticmethod
-    def _get_data_from_db(db_url, inf_id=None, auth=None):
+    def _get_data_from_db(inf_id=None, auth=None):
         """
         Get data from DB.
         If no inf_id specified all Infrastructures are loaded.
         If auth is specified only auth data will be loaded.
         """
         if InfrastructureList.init_table():
-            db = DataBase(db_url)
+            db = InfrastructureList.data_base
             if db.connect():
                 inf_list = {}
                 if inf_id:
@@ -210,7 +211,6 @@ class InfrastructureList():
                         msg = " for inf ID: %s" % inf_id
                     InfrastructureList.logger.warn("No data in database%s!." % msg)
 
-                db.close()
                 return inf_list
             else:
                 InfrastructureList.logger.error("ERROR connecting with the database!.")
@@ -220,8 +220,8 @@ class InfrastructureList():
             return {}
 
     @staticmethod
-    def _save_data_to_db(db_url, inf_list, inf_id=None):
-        db = DataBase(db_url)
+    def _save_data_to_db(inf_list, inf_id=None):
+        db = InfrastructureList.data_base
         if db.connect():
             infs_to_save = inf_list
             if inf_id:
@@ -236,7 +236,6 @@ class InfrastructureList():
                     res = db.execute("replace into inf_list (id, deleted, data, date) values (%s, %s, %s, now())",
                                      (inf.id, int(inf.deleted), data))
 
-            db.close()
             return res
         else:
             InfrastructureList.logger.error("ERROR connecting with the database!.")
@@ -245,7 +244,7 @@ class InfrastructureList():
     @staticmethod
     def _get_inf_ids_from_db():
         try:
-            db = DataBase(Config.DATA_DB)
+            db = InfrastructureList.data_base
             if db.connect():
                 inf_list = []
                 if db.db_type == DataBase.MONGO:
@@ -258,7 +257,6 @@ class InfrastructureList():
                     else:
                         inf_list.append(elem[0])
 
-                db.close()
                 return inf_list
             else:
                 InfrastructureList.logger.error("ERROR connecting with the database!.")
@@ -272,10 +270,10 @@ class InfrastructureList():
         """Restart the class attributes to initial values."""
         InfrastructureList.infrastructure_list = {}
         InfrastructureList._lock = threading.Lock()
-        db = DataBase(Config.DATA_DB)
+        
+        db = InfrastructureList.data_base
         if db.connect():
             if db.db_type == DataBase.MONGO:
                 db.delete("inf_list", {})
             else:
                 db.execute("delete from inf_list")
-            db.close()

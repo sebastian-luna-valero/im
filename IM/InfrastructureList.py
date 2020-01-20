@@ -62,6 +62,7 @@ class InfrastructureList():
         with InfrastructureList._lock:
             if del_inf.id in InfrastructureList.infrastructure_list:
                 del InfrastructureList.infrastructure_list[del_inf.id]
+                InfrastructureList.data_base.garbage_collect()
 
     @staticmethod
     def get_inf_ids(auth=None):

@@ -81,8 +81,8 @@ class DataBase:
             Returns: True if the connection is established correctly
                      of False in case of errors.
         """
-        thr_id = threading.current_thread().ident
-        if thr_id in self.connection and self.connection[thr_id]:
+        thr = threading.current_thread()
+        if thr in self.connection and self.connection[thr]:
             return True
 
         uri = urlparse(self.db_url)
@@ -122,7 +122,7 @@ class DataBase:
     def _connect_mongo(self, url, db):
         if MONGO_AVAILABLE:
             client = MongoClient(url)
-            self.connection[threading.current_thread().ident] = client[db]
+            self.connection[threading.current_thread()] = client[db]
             self.db_type = DataBase.MONGO
             return True
         else:
@@ -133,7 +133,7 @@ class DataBase:
             username, password, server, port = self._get_user_pass_host_port(url)
             if not port:
                 port = 3306
-            self.connection[threading.current_thread().ident] = mdb.connect(server, username, password, db, port)
+            self.connection[threading.current_thread()] = mdb.connect(server, username, password, db, port)
             self.db_type = DataBase.MYSQL
             return True
         else:
@@ -141,7 +141,7 @@ class DataBase:
 
     def _connect_sqlite(self, db_filename):
         if SQLITE_AVAILABLE:
-            self.connection[threading.current_thread().ident] = sqlite.connect(db_filename)
+            self.connection[threading.current_thread()] = sqlite.connect(db_filename)
             self.db_type = DataBase.SQLITE
             return True
         else:
@@ -160,14 +160,14 @@ class DataBase:
                      correctly or a list with the "Fetch" of the results
         """
 
-        thr_id = threading.current_thread().ident
-        if thr_id not in self.connection or self.connection[thr_id] is None:
+        thr = threading.current_thread()
+        if thr not in self.connection or self.connection[thr] is None:
             raise Exception("DataBase object not connected")
         else:
             retries_cont = 0
             while retries_cont < self.MAX_RETRIES:
                 try:
-                    cursor = self.connection[thr_id].cursor()
+                    cursor = self.connection[thr].cursor()
                     if args is not None:
                         if self.db_type == DataBase.SQLITE:
                             new_sql = sql.replace("%s", "?").replace("now()", "date('now')")
@@ -180,7 +180,7 @@ class DataBase:
                     if fetch:
                         res = list(cursor.fetchall())
                     else:
-                        self.connection[thr_id].commit()
+                        self.connection[thr].commit()
                         res = True
                     return res
                 # If the operational error is db lock, retry
@@ -227,20 +227,20 @@ class DataBase:
 
     def close(self):
         """ Closes the DB connection """
-        thr_id = threading.current_thread().ident
-        if thr_id not in self.connection:
+        thr = threading.current_thread()
+        if thr not in self.connection:
             return False
-        elif self.connection[thr_id] is None:
+        elif self.connection[thr] is None:
             # It should never happen
-            del self.connection[thr_id]
+            del self.connection[thr]
             return False
         else:
             try:
                 if self.db_type == DataBase.MONGO:
-                    self.connection[thr_id].client.close()
+                    self.connection[thr].client.close()
                 else:
-                    self.connection[thr_id].close()
-                del self.connection[thr_id]
+                    self.connection[thr].close()
+                del self.connection[thr]
                 return True
             except Exception:
                 return False
@@ -261,7 +261,7 @@ class DataBase:
             res = self.select('SELECT * FROM information_schema.tables WHERE table_name = %s and table_schema = %s',
                               (table_name, db))
         elif self.db_type == DataBase.MONGO:
-            return table_name in self.connection[threading.current_thread().ident].collection_names()
+            return table_name in self.connection[threading.current_thread()].collection_names()
         else:
             return False
 
@@ -275,24 +275,24 @@ class DataBase:
         if self.db_type != DataBase.MONGO:
             raise Exception("Operation only supported in MongoDB")
 
-        thr_id = threading.current_thread().ident
-        if thr_id not in self.connection or self.connection[thr_id] is None:
+        thr = threading.current_thread()
+        if thr not in self.connection or self.connection[thr] is None:
             raise Exception("DataBase object not connected")
         else:
             if projection:
                 projection.update({'_id': False})
-            return list(self.connection[thr_id][table_name].find(filt, projection, sort=sort))
+            return list(self.connection[thr][table_name].find(filt, projection, sort=sort))
 
     def replace(self, table_name, filt, replacement):
         """ insert/replace elements """
         if self.db_type != DataBase.MONGO:
             raise Exception("Operation only supported in MongoDB")
 
-        thr_id = threading.current_thread().ident
-        if thr_id not in self.connection or self.connection[thr_id] is None:
+        thr = threading.current_thread()
+        if thr not in self.connection or self.connection[thr] is None:
             raise Exception("DataBase object not connected")
         else:
-            res = self.connection[thr_id][table_name].replace_one(filt, replacement, True)
+            res = self.connection[thr][table_name].replace_one(filt, replacement, True)
             return res.modified_count == 1 or res.upserted_id is not None
 
     def delete(self, table_name, filt):
@@ -300,11 +300,19 @@ class DataBase:
         if self.db_type != DataBase.MONGO:
             raise Exception("Operation only supported in MongoDB")
 
-        thr_id = threading.current_thread().ident
-        if thr_id not in self.connection or self.connection[thr_id] is None:
+        thr = threading.current_thread()
+        if thr not in self.connection or self.connection[thr] is None:
             raise Exception("DataBase object not connected")
         else:
-            return self.connection[thr_id][table_name].delete_many(filt).deleted_count
+            return self.connection[thr][table_name].delete_many(filt).deleted_count
+
+    def garbage_collect(self):
+        """ 
+        Clean entries in connection table
+        """
+        for thr, _ in self.connection.items():
+            if not thr.is_alive():
+                del self.connection[thr]
 
 
 try:

@@ -83,7 +83,16 @@ class DataBase:
         """
         thr = threading.current_thread()
         if thr in self.connection and self.connection[thr]:
-            return True
+            try:
+                # Check if the server is alive
+                connected = self.connection[thr].ping()
+            except Exception:
+                connected = False
+
+            if connected:
+                return True
+            else:
+                del self.connection[thr]
 
         uri = urlparse(self.db_url)
         protocol = uri[0]

@@ -8,7 +8,7 @@ and the security settings are controlled by the options listed in
 In the following link you can follow the IM REST API in Swaggerhub: 
 `Swagger API <https://app.swaggerhub.com/apis-docs/grycap/InfrastructureManager/>`_.
 
-Every HTTP request must be companied by the header ``AUTHORIZATION`` with
+Every HTTP request must be accompanied by the header ``AUTHORIZATION`` with
 the content of the :ref:`auth-file`, but putting all the elements in one line
 using "\\n" as separator. If the content cannot be parsed successfully, or the user and
 password are not valid, it is returned the HTTP error code 401.
@@ -48,7 +48,7 @@ Next tables summaries the resources and the HTTP methods available.
 +-------------+-----------------------------------------------------+----------------------------------------------------+
 
 +-------------+-----------------------------------------------+------------------------------------------------+------------------------------------------------+
-| HTTP method | /infrastructures/<infId>/vms/<vmId>/stop      | /infrastructures/<infId>/start                 | /infrastructures/<infId>/reboot                |
+| HTTP method | /infrastructures/<infId>/vms/<vmId>/stop      | /infrastructures/<infId>/vms/<vmId>/start      | /infrastructures/<infId>/vms/<vmId>/reboot     |
 +=============+===============================================+================================================+================================================+
 | **PUT**     | | **Stop** the machine ``vmId`` in ``infId``. | | **Start** the machine ``vmId`` in ``infId``. | | **Reboot** the machine ``vmId`` in ``infId``.|
 +-------------+-----------------------------------------------+------------------------------------------------+------------------------------------------------+
@@ -74,11 +74,14 @@ The error message returned by the service will depend on the ``Accept`` header o
 
 GET ``http://imserver.com/infrastructures``
    :Response Content-type: text/uri-list or application/json
+   :input fields: ``filter`` (optional)
    :ok response: 200 OK
    :fail response: 401, 400
 
    Return a list of URIs referencing the infrastructures associated to the IM
-   user. The result is JSON format has the following format::
+   user. In case of using a filter it will be used as a regular expression to
+   search in the RADL or TOSCA used to create the infrastructure.
+   The result is JSON format has the following format::
 
     {
       "uri-list": [
@@ -158,13 +161,13 @@ GET ``http://imserver.com/infrastructures/<infId>/<property_name>``
                  (the virtual infrastructure will not be modified).
       :``state``: a JSON object with two elements:
       
-         :``state``: a string with the aggregated state of the infrastructure. 
-         :``vm_states``: a dict indexed with the VM ID and the value the VM state.
+         :``state``: a string with the aggregated state of the infrastructure (see list of valid states in :ref:`IM-States`).
+         :``vm_states``: a dict indexed with the VM ID and the value the VM state (see list of valid states in :ref:`IM-States`).
 
    The result is JSON format has the following format::
    
     {
-      ["radl"|"state"|"contmsg"|"outputs"|"data"]: <property_value>
+      ["radl"|"tosca"|"state"|"contmsg"|"outputs"|"data"]: <property_value>
     }
 
 POST ``http://imserver.com/infrastructures/<infId>``
@@ -238,13 +241,17 @@ PUT ``http://imserver.com/infrastructures/<infId>/reconfigure``
    If the operation has been performed successfully the return value is an empty string.
 
 DELETE ``http://imserver.com/infrastructures/<infId>``
+   :input fields: ``force`` (optional), ``async`` (optional)
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
    :fail response: 401, 403, 404, 400
 
    Undeploy the virtual machines associated to the infrastructure with ID
    ``infId``. If the operation has been performed successfully 
-   the return value is an empty string.
+   The ``force`` parameter is optional and is a flag to specify that the infra
+   will be from the IM although not all resources are deleted.
+   The return value is an empty string. If ``async`` is set to ``True``
+   the call will not wait the infrastructure to be deleted.
 
 GET ``http://imserver.com/infrastructures/<infId>/vms/<vmId>``
    :Response Content-type: text/plain or application/json
@@ -352,9 +359,8 @@ PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/disks/<diskNum>/sna
 
    Create a snapshot of the specified ``diskNum`` in the VM ``vmId``
    of the infrastructure with ID ``infId``. 
-   
-   The ``autoDelete`` flag
-   specifies that the snapshot will be deleted when the infrastructure is
-   destroyed. If the operation has been performed successfully the return
-   value is the image url of the new created image in IM format
-   (see disk.<diskId>.image.url format in RADL).
+
+   The ``autoDelete`` flag specifies that the snapshot will be deleted when
+   the infrastructure is destroyed (default value false). If the operation has been performed
+   successfully the return value is the image url of the new created image in
+   IM format (see disk.<diskId>.image.url format in RADL).

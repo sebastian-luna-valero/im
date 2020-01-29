@@ -162,6 +162,10 @@ class ConfManager(LoggerMixin, threading.Thread):
             self.log_warn("Error waiting all the VMs to have all the requested IPs")
         else:
             self.log_info("All the VMs have all the requested IPs")
+            # do a final update of all VMs
+            for vm in self.inf.get_vm_list():
+                if vm.state not in VirtualMachine.NOT_RUNNING_STATES:
+                    vm.update_status(self.auth)
 
         return success
 
@@ -814,7 +818,11 @@ class ConfManager(LoggerMixin, threading.Thread):
                     if self.inf.radl.ansible_hosts:
                         configured_ok = True
                     else:
+                        if not self.inf.vm_master:
+                            raise Exception("No master VM found.")
                         ssh = self.inf.vm_master.get_ssh(retry=True)
+                        if not ssh:
+                            raise Exception("Master VM does not have IP.")
                         # Activate tty mode to avoid some problems with sudo in REL
                         ssh.tty = True
 

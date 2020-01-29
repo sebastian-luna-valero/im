@@ -109,6 +109,7 @@ class Config:
     SSH_PASSWORD = ''
     SSH_USERNAME = ''
     SSH_PORT = 0
+    BOOT_MODE = 0  # It can be 0-Normal, 1-ReadOnly, 2-ReadDelete
 
 
 config = ConfigParser()

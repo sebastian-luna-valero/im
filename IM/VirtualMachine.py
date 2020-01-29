@@ -43,6 +43,7 @@ class VirtualMachine(LoggerMixin):
     FAILED = "failed"
     CONFIGURED = "configured"
     UNCONFIGURED = "unconfigured"
+    DELETING = "deleting"
 
     WAIT_TO_PID = "WAIT"
 
@@ -92,6 +93,8 @@ class VirtualMachine(LoggerMixin):
         """Flag to specify that this VM is creation process"""
         self.error_msg = None
         """Message with the cause of the the error in the VM (if known) """
+        self.deleting = False
+        """Flag to specify that this VM is deletion process"""
 
     def serialize(self):
         with self._lock:
@@ -155,16 +158,20 @@ class VirtualMachine(LoggerMixin):
         last = self.is_last_in_cloud(delete_list, remain_vms)
         success = False
         try:
+            self.deleting = True
             VirtualMachine.logger.info("Inf ID: " + self.inf.id + ": Finalizing the VM id: " + str(self.id))
 
             self.kill_check_ctxt_process()
             (success, msg) = self.getCloudConnector().finalize(self, last, auth)
-            if success:
-                self.destroy = True
-            # force the update of the information
-            self.last_update = 0
         except Exception as e:
             msg = str(e)
+        finally:
+            self.deleting = False
+
+        if success:
+            self.destroy = True
+        # force the update of the information
+        self.last_update = 0
 
         if not success:
             VirtualMachine.logger.info("Inf ID: " + self.inf.id + ": The VM cannot be finalized: %s" % msg)
@@ -500,6 +507,10 @@ class VirtualMachine(LoggerMixin):
             if self.state == VirtualMachine.FAILED and self.id is None:
                 return False
 
+            if self.deleting:
+                self.state = VirtualMachine.DELETING
+                return True
+
             now = int(time.time())
             state = self.state
             updated = False
@@ -654,19 +665,41 @@ class VirtualMachine(LoggerMixin):
                         private_net = net
 
                 # Search in the RADL nets, first in the nets this VM is
-                # connected to
+                # connected to and check the CIDR of the nets
                 if private_net is None:
                     for net in self.info.networks:
                         if (not net.isPublic() and net not in private_net_map.values() and
-                                net.id not in ignore_nets and self.getNumNetworkWithConnection(net.id) is not None):
+                                net.id not in ignore_nets and self.getNumNetworkWithConnection(net.id) is not None and
+                                net.getValue('cidr') and IPAddress(private_ip) in IPNetwork(net.getValue('cidr'))):
+                            private_net = net
+                            private_net_map[net.getValue('cidr')] = net
+                            break
+
+                # Now in the RADL nets this VM is connected to
+                # but without CIDR set
+                if private_net is None:
+                    for net in self.info.networks:
+                        if (not net.isPublic() and net not in private_net_map.values() and
+                                net.id not in ignore_nets and self.getNumNetworkWithConnection(net.id) is not None and
+                                not net.getValue('cidr')):
                             private_net = net
                             private_net_map[private_net_mask] = net
                             break
 
                 # Search in the rest of RADL nets
                 if private_net is None:
+                    # First check the CIDR
                     for net in self.info.networks:
-                        if not net.isPublic() and net not in private_net_map.values() and net.id not in ignore_nets:
+                        if (not net.isPublic() and net not in private_net_map.values() and net.id not in ignore_nets and
+                                net.getValue('cidr') and IPAddress(private_ip) in IPNetwork(net.getValue('cidr'))):
+                            private_net = net
+                            private_net_map[private_net_mask] = net
+                            break
+
+                    # The search in the rest
+                    for net in self.info.networks:
+                        if (not net.isPublic() and net not in private_net_map.values() and net.id not in ignore_nets and
+                                not net.getValue('cidr')):
                             private_net = net
                             private_net_map[private_net_mask] = net
                             break
@@ -694,17 +727,19 @@ class VirtualMachine(LoggerMixin):
         """
         Get SSH object to connect with this VM
         """
-        (user, passwd, _, private_key) = self.getCredentialValues()
-        ip = self.getPublicIP()
-        port = self.getSSHPort()
+        with self._lock:
+            (user, passwd, _, private_key) = self.getCredentialValues()
+            ip = self.getPublicIP()
+            port = self.getSSHPort()
+            if ip is None:
+                # if this is the master VM and SSH reverse is activated
+                if self.inf.vm_master and self.inf.vm_master.id == self.id and Config.SSH_PORT > 0:
+                    ip = 'localhost'
+                    port = self.SSH_REVERSE_BASE_PORT + int(self.inf.num)
+                else:
+                    ip = self.getPrivateIP()
         if ip is None:
-            # if this is the master VM and SSH reverse is activated
-            if self.inf.vm_master and self.inf.vm_master.id == self.id and Config.SSH_PORT > 0:
-                ip = 'localhost'
-                port = self.SSH_REVERSE_BASE_PORT + int(self.inf.num)
-            else:
-                ip = self.getPrivateIP()
-        if ip is None:
+            self.log_warn("VM ID %s does not have IP. Do not return SSH Object." % self.im_id)
             return None
         if retry:
             return SSHRetry(ip, user, passwd, private_key, port)
@@ -780,12 +815,6 @@ class VirtualMachine(LoggerMixin):
             self.ctxt_pid = None
             self.configured = False
 
-        ip = self.getPublicIP()
-        if not ip:
-            ip = ip = self.getPrivateIP()
-        remote_dir = Config.REMOTE_CONF_DIR + "/" + \
-            str(self.inf.id) + "/" + ip + "_" + str(self.im_id)
-
         initial_count_out = self.cont_out
         wait = 0
         while self.ctxt_pid:
@@ -802,8 +831,9 @@ class VirtualMachine(LoggerMixin):
                 try:
                     self.log_info("Getting status of ctxt process with pid: " + str(ctxt_pid))
                     (_, _, exit_status) = ssh.execute("ps " + str(ctxt_pid))
-                except:
-                    self.log_warn("Error getting status of ctxt process with pid: " + str(ctxt_pid))
+                    self.ssh_connect_errors = 0
+                except Exception as ex:
+                    self.log_warn("Error getting status of ctxt process with pid: %s. %s" % (ctxt_pid, ex))
                     exit_status = 0
                     self.ssh_connect_errors += 1
                     if self.ssh_connect_errors > Config.MAX_SSH_ERRORS:
@@ -817,11 +847,16 @@ class VirtualMachine(LoggerMixin):
                                                              "credentials has been changed.")
                         return None
 
+                ip = self.getPublicIP()
+                if not ip:
+                    ip = ip = self.getPrivateIP()
+                remote_dir = "%s/%s/%s_%s" % (Config.REMOTE_CONF_DIR, self.inf.id, ip, self.im_id)
+
                 if exit_status != 0:
                     # The process has finished, get the outputs
                     self.log_info("The process %s has finished, get the outputs" % ctxt_pid)
-                    ctxt_log = self.get_ctxt_log(remote_dir, True)
-                    msg = self.get_ctxt_output(remote_dir, True)
+                    ctxt_log = self.get_ctxt_log(remote_dir, ssh, True)
+                    msg = self.get_ctxt_output(remote_dir, ssh, True)
                     if ctxt_log:
                         self.cont_out = initial_count_out + msg + ctxt_log
                     else:
@@ -834,7 +869,7 @@ class VirtualMachine(LoggerMixin):
                     if Config.UPDATE_CTXT_LOG_INTERVAL > 0 and wait > Config.UPDATE_CTXT_LOG_INTERVAL:
                         wait = 0
                         self.log_info("Get the log of the ctxt process with pid: " + str(ctxt_pid))
-                        ctxt_log = self.get_ctxt_log(remote_dir)
+                        ctxt_log = self.get_ctxt_log(remote_dir, ssh)
                         self.cont_out = initial_count_out + ctxt_log
                     # The process is still running, wait
                     self.log_info("The process %s is still running. wait." % ctxt_pid)
@@ -857,14 +892,14 @@ class VirtualMachine(LoggerMixin):
                 # Otherwise return the value of configured
                 return self.configured
 
-    def get_ctxt_log(self, remote_dir, delete=False):
-        ssh = self.get_ssh_ansible_master()
+    def get_ctxt_log(self, remote_dir, ssh, delete=False):
         tmp_dir = tempfile.mkdtemp()
         conf_out = ""
 
         # Download the contextualization agent log
         try:
             # Get the messages of the contextualization process
+            self.log_debug("Get File: " + remote_dir + '/ctxt_agent.log')
             ssh.sftp_get(remote_dir + '/ctxt_agent.log', tmp_dir + '/ctxt_agent.log')
             with open(tmp_dir + '/ctxt_agent.log') as f:
                 conf_out = f.read()
@@ -887,16 +922,15 @@ class VirtualMachine(LoggerMixin):
 
         return conf_out
 
-    def get_ctxt_output(self, remote_dir, delete=False):
-        ssh = self.get_ssh_ansible_master()
+    def get_ctxt_output(self, remote_dir, ssh, delete=False):
         tmp_dir = tempfile.mkdtemp()
         msg = ""
 
         # Download the contextualization agent log
         try:
             # Get the JSON output of the ctxt_agent
-            ssh.sftp_get(remote_dir + '/ctxt_agent.out',
-                         tmp_dir + '/ctxt_agent.out')
+            self.log_debug("Get File: " + remote_dir + '/ctxt_agent.out')
+            ssh.sftp_get(remote_dir + '/ctxt_agent.out', tmp_dir + '/ctxt_agent.out')
             with open(tmp_dir + '/ctxt_agent.out') as f:
                 ctxt_agent_out = json.load(f)
             try:
@@ -980,6 +1014,7 @@ class VirtualMachine(LoggerMixin):
                 else:
                     return None
             else:
+                self.log_warn("There is not master VM. Do not return SSH object.")
                 return None
 
     def __lt__(self, other):
@@ -1018,10 +1053,12 @@ class VirtualMachine(LoggerMixin):
         rest_url = REST_URL if REST_URL else ""
         url = rest_url + '/infrastructures/' + str(self.inf.id) + '/vms/' + str(self.creation_im_id) + '/command'
         auth = self.inf.auth.getAuthInfo("InfrastructureManager")[0]
-        imuser = auth['username']
-        impass = auth['password']
-        command = ('curl -s -H "Authorization: type = InfrastructureManager; '
-                   'username = %s; password = %s" -H "Accept: text/plain" %s' % (imuser, impass, url))
+        if 'token' in auth:
+            imauth = "token = %s" % auth['token']
+        else:
+            imauth = "username = %s; password = %s" % (auth['username'], auth['password'])
+        command = ('curl -s --insecure -H "Authorization: type = InfrastructureManager; %s" '
+                   '-H "Accept: text/plain" %s' % (imauth, url))
         return [command + " | bash &"]
 
     def getSSHReversePort(self):
@@ -1062,3 +1099,27 @@ class VirtualMachine(LoggerMixin):
                                                                    ssh.host))
 
         return command
+
+    @staticmethod
+    def delete_public_nets(radl):
+        """
+        Helper function to correctly delete references to public nets in an RADL
+        """
+        nets_id = [net.id for net in radl.networks if net.isPublic()]
+        system = radl.systems[0]
+
+        i = 0
+        while system.getValue('net_interface.%d.connection' % i):
+            next_net = system.getValue('net_interface.%d.connection' % (i + 1))
+            next_dns = system.getValue('net_interface.%d.connection' % (i + 1))
+            f = system.getFeature("net_interface.%d.connection" % i)
+            if f.value in nets_id:
+                if next_net:
+                    system.setValue('net_interface.%d.connection' % i, next_net)
+                    system.setValue('net_interface.%d.dns_name' % i, next_dns)
+                else:
+                    system.delValue('net_interface.%d.connection' % i)
+                    system.delValue('net_interface.%d.dns_name' % i)
+                if system.getValue('net_interface.%d.ip' % i):
+                    system.delValue('net_interface.%d.ip' % i)
+            i += 1

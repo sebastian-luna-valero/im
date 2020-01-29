@@ -2,7 +2,7 @@ import os
 import logging
 import yaml
 import copy
-import time
+import operator
 import requests
 
 try:
@@ -62,7 +62,7 @@ class Tosca:
 
                 for node in node_list:
                     if node.name == sys_name:
-                        if prop in policy.properties:
+                        if policy.properties and prop in policy.properties:
                             Tosca.logger.debug("Set %s: %s to system: %s." % (prop,
                                                                               policy.properties[prop],
                                                                               sys_name))
@@ -92,20 +92,19 @@ class Tosca:
         interfaces = {}
         cont_intems = []
 
+        # first process the networks as they are referred later
+        for node in self.tosca.nodetemplates:
+            root_type = Tosca._get_root_parent_type(node).type
+            if root_type == "tosca.nodes.network.Network":
+                net = self._gen_network(node)
+                radl.networks.append(net)
+
         for node in self.tosca.nodetemplates:
             root_type = Tosca._get_root_parent_type(node).type
 
-            if root_type == "tosca.nodes.BlockStorage":
-                # The BlockStorage disks are processed later
+            if root_type in ["tosca.nodes.BlockStorage", "tosca.nodes.network.Port", "tosca.nodes.network.Network"]:
+                # These elements are processed in other parts
                 pass
-            elif root_type == "tosca.nodes.network.Port":
-                pass
-            elif root_type == "tosca.nodes.network.Network":
-                # TODO: check IM to support more network properties
-                # At this moment we only support the network_type with values,
-                # private and public
-                net = self._gen_network(node)
-                radl.networks.append(net)
             else:
                 if root_type == "tosca.nodes.Compute":
                     # Add the system RADL element
@@ -168,49 +167,60 @@ class Tosca:
 
         self._order_deploys(radl)
 
-        self._check_private_networks(radl)
+        self._check_private_networks(radl, inf_info)
 
         return all_removal_list, self._complete_radl_networks(radl)
 
     @staticmethod
-    def _check_private_networks(radl):
+    def _check_private_networks(radl, inf_info):
         """
         Check private networks to assure to create different nets
         for different cloud providers
         """
         priv_net_cloud_map = {}
-        for s in radl.systems:
-            image = s.getValue("disk.0.image.url")
-            if image:
-                url = urlparse(image)
-                protocol = url[0]
-                src_host = url[1].split(':')[0]
-                for net_id in s.getNetworkIDs():
-                    net = radl.get_network_by_id(net_id)
-                    if not net.isPublic():
-                        if net_id in priv_net_cloud_map:
-                            if priv_net_cloud_map[net_id] != "%s://%s" % (protocol, src_host):
-                                if "%s://%s" % (protocol, src_host) in list(priv_net_cloud_map.values()):
-                                    for key, value in priv_net_cloud_map.items():
-                                        if value == "%s://%s" % (protocol, src_host):
-                                            new_net_id = key
-                                            break
-                                else:
-                                    # This net appears in two cloud, create another one
-                                    now = str(int(time.time() * 100))
-                                    new_net = network.createNetwork("private." + now, False)
-                                    radl.networks.append(new_net)
-                                    new_net_id = new_net.id
-                                    # and replace the connection id in the system
-                                i = 0
-                                while s.getValue("net_interface.%d.connection" % i):
-                                    if s.getValue("net_interface.%d.connection" % i) == net_id:
-                                        s.setValue("net_interface.%d.connection" % i, new_net_id)
-                                    i += 1
 
-                                priv_net_cloud_map[new_net.id] = "%s://%s" % (protocol, src_host)
-                        else:
-                            priv_net_cloud_map[net_id] = "%s://%s" % (protocol, src_host)
+        # make that deployed nodes are checked first
+        to_deploy = [d.id for d in radl.deploys]
+        systems = [[s for s in radl.systems if s.name not in to_deploy],
+                   [s for s in radl.systems if s.name in to_deploy]]
+
+        for s1 in systems:
+            for s in s1:
+                image = s.getValue("disk.0.image.url")
+                # in case of an AddResource
+                if inf_info:
+                    vm_list = inf_info.get_vm_list_by_system_name()
+                    if s.name in vm_list and vm_list[s.name][-1].info.systems[0].getValue("disk.0.image.url"):
+                        image = vm_list[s.name][-1].info.systems[0].getValue("disk.0.image.url")
+                if image:
+                    url = urlparse(image)
+                    protocol = url[0]
+                    src_host = url[1].split(':')[0]
+                    for net_id in s.getNetworkIDs():
+                        net = radl.get_network_by_id(net_id)
+                        if not net.isPublic():
+                            if net_id in priv_net_cloud_map:
+                                if priv_net_cloud_map[net_id] != "%s://%s" % (protocol, src_host):
+                                    if "%s://%s" % (protocol, src_host) in list(priv_net_cloud_map.values()):
+                                        for key, value in priv_net_cloud_map.items():
+                                            if value == "%s://%s" % (protocol, src_host):
+                                                new_net_id = key
+                                                break
+                                    else:
+                                        # This net appears in two cloud, create another one
+                                        new_net = network.createNetwork("private.%s" % src_host, False)
+                                        radl.networks.append(new_net)
+                                        new_net_id = new_net.id
+                                        # and replace the connection id in the system
+                                    i = 0
+                                    while s.getValue("net_interface.%d.connection" % i):
+                                        if s.getValue("net_interface.%d.connection" % i) == net_id:
+                                            s.setValue("net_interface.%d.connection" % i, new_net_id)
+                                        i += 1
+
+                                    priv_net_cloud_map[new_net_id] = "%s://%s" % (protocol, src_host)
+                            else:
+                                priv_net_cloud_map[net_id] = "%s://%s" % (protocol, src_host)
 
         return
 
@@ -311,12 +321,72 @@ class Tosca:
         return endpoints
 
     def _add_node_nets(self, node, radl, system, nodetemplates):
+        public_ip = False
+        private_ip = True
+
+        # This is the solution using the deprecated public_ip property
+        node_props = node.get_properties()
+        if node_props and "public_ip" in node_props:
+            public_ip = self._final_function_result(node_props["public_ip"].value, node)
+
+        # This is the solution using endpoints
+        net_provider_id = None
+        dns_name = None
+        ports = {}
+        endpoints = self._get_node_endpoints(node, nodetemplates)
+
+        for endpoint in endpoints:
+            cap_props = endpoint.get_properties()
+            if cap_props and "network_name" in cap_props:
+                network_name = str(self._final_function_result(cap_props["network_name"].value, node))
+                pool_name = None
+                parts = network_name.split(",")
+                if len(parts) > 1:
+                    # This is for the special case of OST with net name and pool name
+                    network_name = parts[0].strip()
+                    pool_name = parts[1].strip()
+
+                if network_name == "PUBLIC":
+                    public_ip = True
+                # In this case the user is specifying the provider_id
+                elif network_name.endswith(".PUBLIC"):
+                    public_ip = True
+                    parts = network_name.split(".")
+                    net_provider_id = ".".join(parts[:-1])
+                elif network_name.endswith(".PRIVATE"):
+                    parts = network_name.split(".")
+                    net_provider_id = ".".join(parts[:-1])
+                elif network_name != "PRIVATE":
+                    # assume that is a private one
+                    net_provider_id = network_name
+            if cap_props and "dns_name" in cap_props:
+                dns_name = self._final_function_result(cap_props["dns_name"].value, node)
+            if cap_props and "private_ip" in cap_props:
+                private_ip = self._final_function_result(cap_props["private_ip"].value, node)
+            if cap_props and "ports" in cap_props:
+                ports = self._final_function_result(cap_props["ports"].value, node)
+            if cap_props and "port" in cap_props:
+                port = self._final_function_result(cap_props["port"].value, node)
+                protocol = "tcp"
+                if "protocol" in cap_props:
+                    protocol = self._final_function_result(cap_props["protocol"].value, node)
+                ports["im-%s-%s" % (protocol, port)] = {"protocol": protocol, "source": port}
+
+        if dns_name:
+            system.setValue('net_interface.0.dns_name', dns_name)
+
         # Find associated Networks
         nets = self._get_bind_networks(node, nodetemplates)
         if nets:
             # If there are network nodes, use it to define system network
             # properties
+            port_net = None
             for net_name, ip, dns_name, num in nets:
+                net = radl.get_network_by_id(net_name)
+                if not net:
+                    raise Exception("Node %s with a port binded to a non existing network: %s." % (node.name,
+                                                                                                   net_name))
+
                 system.setValue('net_interface.%d.connection' % num, net_name)
                 # This is not a normative property
                 if dns_name:
@@ -324,58 +394,18 @@ class Tosca:
                                     num, dns_name)
                 if ip:
                     system.setValue('net_interface.%d.ip' % num, ip)
+
+                if net.isPublic():
+                    port_net = net
+                elif port_net is None:
+                    port_net = net
+
+            if port_net and ports:
+                outports = Tosca._format_outports(ports)
+                if port_net.getValue("outports"):
+                    outports = "%s,%s" % (port_net.getValue("outports"), outports)
+                port_net.setValue("outports", outports)
         else:
-            public_ip = False
-            private_ip = True
-
-            # This is the solution using the deprecated public_ip property
-            node_props = node.get_properties()
-            if node_props and "public_ip" in node_props:
-                public_ip = self._final_function_result(node_props["public_ip"].value, node)
-
-            # This is the solution using endpoints
-            net_provider_id = None
-            dns_name = None
-            ports = {}
-            endpoints = self._get_node_endpoints(node, nodetemplates)
-
-            for endpoint in endpoints:
-                cap_props = endpoint.get_properties()
-                if cap_props and "network_name" in cap_props:
-                    network_name = str(self._final_function_result(cap_props["network_name"].value, node))
-                    pool_name = None
-                    parts = network_name.split(",")
-                    if len(parts) > 1:
-                        # This is for the special case of OST with net name and pool name
-                        network_name = parts[0].strip()
-                        pool_name = parts[1].strip()
-
-                    if network_name == "PUBLIC":
-                        public_ip = True
-                    # In this case the user is specifying the provider_id
-                    elif network_name.endswith(".PUBLIC"):
-                        public_ip = True
-                        parts = network_name.split(".")
-                        net_provider_id = ".".join(parts[:-1])
-                    elif network_name.endswith(".PRIVATE"):
-                        parts = network_name.split(".")
-                        net_provider_id = ".".join(parts[:-1])
-                    elif network_name != "PRIVATE":
-                        # assume that is a private one
-                        net_provider_id = network_name
-                if cap_props and "dns_name" in cap_props:
-                    dns_name = self._final_function_result(cap_props["dns_name"].value, node)
-                if cap_props and "private_ip" in cap_props:
-                    private_ip = self._final_function_result(cap_props["private_ip"].value, node)
-                if cap_props and "ports" in cap_props:
-                    ports = self._final_function_result(cap_props["ports"].value, node)
-                if cap_props and "port" in cap_props:
-                    port = self._final_function_result(cap_props["port"].value, node)
-                    protocol = "tcp"
-                    if "protocol" in cap_props:
-                        protocol = self._final_function_result(cap_props["protocol"].value, node)
-                    ports["im-%s-%s" % (protocol, port)] = {"protocol": protocol, "source": port}
-
             private_net = None
             # The private net is always added
             if not public_ip or private_ip:
@@ -448,9 +478,6 @@ class Tosca:
                     elif not private_net:
                         public_net.setValue("provider_id", net_provider_id)
 
-            if dns_name:
-                system.setValue('net_interface.0.dns_name', dns_name)
-
     def _get_scalable_properties(self, node):
         count = min_instances = max_instances = default_instances = None
         removal_list = []
@@ -500,24 +527,26 @@ class Tosca:
         return res
 
     def _get_artifact_full_uri(self, node, artifact_name):
-        res = None
+        artifact_def = artifact_name
         artifacts = self._get_node_artifacts(node)
         for name, artifact in artifacts.items():
             if name == artifact_name:
-                if isinstance(artifact, dict):
-                    res = artifact['file']
-                    if 'repository' in artifact:
-                        repo = artifact['repository']
-                        repositories = self.tosca.tpl.get('repositories')
+                artifact_def = artifact
 
-                        if repositories:
-                            for repo_name, repo_def in repositories.items():
-                                if repo_name == repo:
-                                    repo_url = (
-                                        (repo_def['url']).strip()).rstrip("//")
-                                    res = repo_url + "/" + artifact['file']
-                else:
-                    res = artifact
+        res = None
+        if isinstance(artifact_def, dict):
+            res = artifact_def['file']
+            if 'repository' in artifact_def:
+                repo = artifact_def['repository']
+                repositories = self.tosca.tpl.get('repositories')
+
+                if repositories:
+                    for repo_name, repo_def in repositories.items():
+                        if repo_name == repo:
+                            repo_url = ((repo_def['url']).strip()).rstrip("//")
+                            res = repo_url + "/" + artifact_def['file']
+        else:
+            res = artifact_def
 
         return res
 
@@ -552,15 +581,12 @@ class Tosca:
                         val = None
 
                         if self._is_artifact(param_value):
-                            artifact_uri = self._get_artifact_uri(
-                                param_value, node)
+                            artifact_uri = self._get_artifact_uri(param_value, node)
                             if artifact_uri:
-                                val = remote_artifacts_path + "/" + \
-                                    os.path.basename(artifact_uri)
+                                val = remote_artifacts_path + "/" + os.path.basename(artifact_uri)
                                 artifacts.append(artifact_uri)
                         else:
-                            val = self._final_function_result(
-                                param_value, node)
+                            val = self._final_function_result(param_value, node)
 
                         if val is not None:
                             env[param_name] = val
@@ -575,38 +601,36 @@ class Tosca:
                     for artifact in artifacts:
                         tasks += "  - name: Download artifact " + artifact + "\n"
                         tasks += "    get_url: dest=" + remote_artifacts_path + "/" + \
-                            os.path.basename(artifact) + \
-                            " url='" + artifact + "'\n"
+                            os.path.basename(artifact) + " url='" + artifact + "'\n"
 
-                implementation_url = urlparse(
-                    self._get_implementation_url(node, interface.implementation))
+                implementation = self._get_implementation_url(node, interface.implementation)
+                implementation_url = urlparse(implementation)
 
                 if implementation_url[0] in ['http', 'https', 'ftp']:
                     script_path = implementation_url[2]
                     try:
-                        resp = requests.get(interface.implementation)
+                        resp = requests.get(implementation)
                         script_content = resp.text
                         if resp.status_code != 200:
                             raise Exception(resp.reason + "\n" + resp.text)
                     except Exception as ex:
                         raise Exception("Error downloading the implementation script '%s': %s" % (
-                            interface.implementation, str(ex)))
+                            implementation, str(ex)))
                 else:
-                    script_path = os.path.join(
-                        Tosca.ARTIFACTS_PATH, interface.implementation)
+                    script_path = os.path.join(Tosca.ARTIFACTS_PATH, implementation)
                     if os.path.isfile(script_path):
                         f = open(script_path)
                         script_content = f.read()
                         f.close()
                     else:
                         try:
-                            resp = requests.get(Tosca.ARTIFACTS_REMOTE_REPO + interface.implementation)
+                            resp = requests.get(Tosca.ARTIFACTS_REMOTE_REPO + implementation)
                             script_content = resp.text
                             if resp.status_code != 200:
                                 raise Exception(resp.reason + "\n" + resp.text)
                         except Exception as ex:
                             raise Exception("Implementation file: '%s' is not located in the artifacts folder '%s' "
-                                            "or in the artifacts remote url '%s'." % (interface.implementation,
+                                            "or in the artifacts remote url '%s'." % (implementation,
                                                                                       Tosca.ARTIFACTS_PATH,
                                                                                       Tosca.ARTIFACTS_REMOTE_REPO))
 
@@ -617,6 +641,7 @@ class Tosca:
                                 var_value = '"%s"' % var_value
                             else:
                                 var_value = str(var_value)
+                            var_value = var_value.replace("\n", "\\n")
                             variables += '    %s: %s ' % (var_name, var_value) + "\n"
                         variables += "\n"
 
@@ -668,12 +693,10 @@ class Tosca:
         try:
             yamlo = yaml.safe_load(script_content)
             if not isinstance(yamlo, list):
-                Tosca.logger.warn("Error parsing YAML: " +
-                                  script_content + "\n.Do not remove header.")
+                Tosca.logger.warn("Error parsing YAML: " + script_content + "\n.Do not remove header.")
                 return script_content
         except Exception:
-            Tosca.logger.exception(
-                "Error parsing YAML: " + script_content + "\n.Do not remove header.")
+            Tosca.logger.exception("Error parsing YAML: " + script_content + "\n.Do not remove header.")
             return script_content
 
         for elem in yamlo:
@@ -817,7 +840,7 @@ class Tosca:
         if len(func.args) == 3:
             try:
                 index = int(func.args[2])
-            except:
+            except Exception:
                 capability_name = func.args[1]
                 attribute_name = func.args[2]
         elif len(func.args) == 4:
@@ -825,7 +848,7 @@ class Tosca:
             attribute_name = func.args[2]
             try:
                 index = int(func.args[3])
-            except:
+            except Exception:
                 Tosca.logger.exception("Error getting get_attribute index.")
 
         if node_name == "HOST":
@@ -1075,50 +1098,33 @@ class Tosca:
                                 filter_props[p_name] = ("equal", p_value)
 
         operator_map = {
-            'equal': '==',
-            'greater_than': '>',
-            'greater_or_equal': '>=',
-            'less_than': '<',
-            'less_or_equal': '<='
+            'equal': operator.eq,
+            'greater_than': operator.gt,
+            'greater_or_equal': operator.ge,
+            'less_than': operator.lt,
+            'less_or_equal': operator.le
         }
 
         # Compare the properties
         for name, value in filter_props.items():
-            operator, filter_value = value
+            op, filter_value = value
             if name in ['disk_size', 'mem_size']:
                 filter_value, _ = Tosca._get_size_and_unit(filter_value)
 
             if name in node_props:
                 node_value, _ = node_props[name]
-
-                if isinstance(node_value, str) or isinstance(node_value, unicode):
-                    str_node_value = "'" + node_value + "'"
-                else:
-                    str_node_value = str(node_value)
-
-                conv_operator = operator_map.get(operator, None)
+                conv_operator = operator_map.get(op, None)
                 if conv_operator:
-                    if isinstance(filter_value, str) or isinstance(filter_value, unicode):
-                        str_filter_value = "'" + filter_value + "'"
-                    else:
-                        str_filter_value = str(filter_value)
-
-                    comparation = str_node_value + conv_operator + str_filter_value
+                    comparation = conv_operator(node_value, filter_value)
                 else:
-                    if operator == "in_range":
-                        minv = filter_value[0]
-                        maxv = filter_value[1]
-                        comparation = str_node_value + ">=" + \
-                            str(minv) + " and " + \
-                            str_node_value + "<=" + str(maxv)
-                    elif operator == "valid_values":
-                        comparation = str_node_value + \
-                            " in " + str(filter_value)
+                    if op == "in_range":
+                        comparation = node_value >= filter_value[0] and node_value <= filter_value[1]
+                    elif op == "valid_values":
+                        comparation = node_value in filter_value
                     else:
-                        Tosca.logger.warn(
-                            "Logical operator %s not supported." % operator)
+                        Tosca.logger.warn("Logical operator %s not supported." % op)
 
-                if not eval(comparation):
+                if not comparation:
                     return False
             else:
                 # if this property is not specified in the node, return False
@@ -1149,7 +1155,7 @@ class Tosca:
         if node.requirements:
             maxl = 0
             for r, n in node.relationships.items():
-                if Tosca._is_derived_from(r, [r.HOSTEDON, r.DEPENDSON]):
+                if Tosca._is_derived_from(r, [r.HOSTEDON, r.DEPENDSON, r.CONNECTSTO]):
                     level = Tosca._get_dependency_level(n)
                 else:
                     level = 0
@@ -1210,7 +1216,7 @@ class Tosca:
         nework_type = self._final_function_result(node.get_property_value('network_type'), node)
         network_name = self._final_function_result(node.get_property_value('network_name'), node)
         network_cidr = self._final_function_result(node.get_property_value('cidr'), node)
-        network_router = self._final_function_result(node.get_property_value('router'), node)
+        network_router = self._final_function_result(node.get_property_value('gateway_ip'), node)
 
         # TODO: get more properties -> must be implemented in the RADL
         if nework_type.lower() == "public":
@@ -1221,7 +1227,7 @@ class Tosca:
 
         if network_cidr:
             res.setValue("cidr", network_cidr)
-            # assume that if the cidr is specified the net wiil be created
+            # assume that if the cidr is specified the net will be created
             res.setValue("create", "yes")
 
         if network_router:
@@ -1279,6 +1285,8 @@ class Tosca:
         Take a node of type "Compute" and get the RADL.system to represent it
         """
         res = system(node.name)
+
+        res.setValue("instance_name", node.name)
 
         property_map = {
             'architecture': 'cpu.arch',
@@ -1458,7 +1466,7 @@ class Tosca:
         """
         try:
             node_type = node.type_definition
-        except:
+        except AttributeError:
             node_type = node.definition
 
         while True:

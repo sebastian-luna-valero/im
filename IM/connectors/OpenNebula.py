@@ -22,6 +22,7 @@ try:
 except ImportError:
     from xmlrpc.client import ServerProxy
 
+import os.path
 import time
 from distutils.version import LooseVersion
 from IM.xmlobject import XMLObject
@@ -167,8 +168,18 @@ class OpenNebulaCloudConnector(CloudConnector):
 
     def __init__(self, cloud_info, inf):
         CloudConnector.__init__(self, cloud_info, inf)
-        self.server_url = "http://%s:%d/RPC2" % (
-            self.cloud.server, self.cloud.port)
+        if self.cloud.path:
+            if self.cloud.port == -1:
+                if self.cloud.protocol == 'https':
+                    self.cloud.port = 443
+                elif self.cloud.protocol == 'http':
+                    self.cloud.port = 80
+                else:
+                    raise Exception("Invalid port/protocol specified for OpenNebula site: %s" % self.cloud.server)
+            self.server_url = "%s://%s:%d%s" % (self.cloud.protocol, self.cloud.server,
+                                                self.cloud.port, self.cloud.path)
+        else:
+            self.server_url = "http://%s:%d/RPC2" % (self.cloud.server, self.cloud.port)
 
     def concrete_system(self, radl_system, str_url, auth_data):
         url = urlparse(str_url)
@@ -431,6 +442,8 @@ class OpenNebulaCloudConnector(CloudConnector):
             inf.add_vm(vm)
             template = self.getONETemplate(vm.info, sgs, auth_data, vm)
 
+            self.log_debug("ONE Template: %s" % template)
+
             success, res_id = server.one.vm.allocate(session_id, template)[0:2]
 
             if success:
@@ -500,7 +513,10 @@ class OpenNebulaCloudConnector(CloudConnector):
             success = True
 
         if last and success:
-            self.delete_security_groups(vm.inf, auth_data)
+            one_ver = self.getONEVersion(auth_data)
+            # Security Groups appears in version 4.12.0
+            if one_ver >= LooseVersion("4.12.0"):
+                self.delete_security_groups(vm.inf, auth_data)
 
         return (success, err)
 
@@ -544,36 +560,41 @@ class OpenNebulaCloudConnector(CloudConnector):
         if not name:
             name = "userimage"
         url = urlparse(system.getValue("disk.0.image.url"))
-        path = url[2]
+        path = os.path.basename(url[2])
 
-        if path[1:].isdigit():
-            disks = 'DISK = [ IMAGE_ID = "%s" ]\n' % path[1:]
+        if path.isdigit():
+            disks = 'DISK = [ IMAGE_ID = "%s" ]\n' % path
         else:
             if ConfigOpenNebula.IMAGE_UNAME:
                 # This only works if the user owns the image
-                disks = 'DISK = [ IMAGE = "%s" ]\n' % path[1:]
+                disks = 'DISK = [ IMAGE = "%s" ]\n' % path
             else:
                 disks = 'DISK = [ IMAGE = "%s", IMAGE_UNAME = "%s" ]\n' % (
-                    path[1:], ConfigOpenNebula.IMAGE_UNAME)
+                    path, ConfigOpenNebula.IMAGE_UNAME)
         cont = 1
         while system.getValue("disk." + str(cont) + ".image.url") or system.getValue("disk." + str(cont) + ".size"):
             disk_image = system.getValue("disk." + str(cont) + ".image.url")
+            disk_device = system.getValue("disk." + str(cont) + ".device")
             if disk_image:
-                disks += 'DISK = [ IMAGE_ID = "%s" ]\n' % urlparse(disk_image)[2][1:]
+                disks += 'DISK = [ IMAGE_ID = "%s"' % urlparse(disk_image)[2][1:]
             else:
                 disk_size = system.getFeature(
                     "disk." + str(cont) + ".size").getValue('M')
-                disk_device = system.getValue("disk." + str(cont) + ".device")
                 disk_fstype = system.getValue("disk." + str(cont) + ".fstype")
                 if not disk_fstype:
                     disk_fstype = 'ext3'
 
-                disks += ' DISK = [ TYPE = fs , FORMAT = %s, SIZE = %d,' % (disk_fstype, int(disk_size))
-                if disk_device:
-                    disks += 'TARGET = %s,' % disk_device
-                disks += 'SAVE = no ]\n'
+                disks += ' DISK = [ SAVE = no, TYPE = fs , FORMAT = %s, SIZE = %d' % (disk_fstype, int(disk_size))
+
+            if disk_device:
+                disks += ', TARGET = %s' % disk_device
+            disks += ' ]\n'
 
             cont += 1
+
+        sched = ""
+        if system.getValue('availability_zone'):
+            sched = 'SCHED_REQUIREMENTS = "CLUSTER_ID=\\"%s\\""' % system.getValue('availability_zone')
 
         res = '''
             NAME = %s
@@ -586,7 +607,9 @@ class OpenNebulaCloudConnector(CloudConnector):
             %s
 
             %s
-        ''' % (name, cpu, cpu, memory, arch, disks, ConfigOpenNebula.TEMPLATE_OTHER)
+
+            %s
+        ''' % (name, cpu, cpu, memory, arch, disks, sched, ConfigOpenNebula.TEMPLATE_OTHER)
 
         user_template = ""
         tags = self.get_instance_tags(system)
@@ -610,13 +633,13 @@ class OpenNebulaCloudConnector(CloudConnector):
             system.setValue('disk.0.os.credentials.private_key', private)
 
         if (private and public) or ConfigOpenNebula.TEMPLATE_CONTEXT or Config.SSH_REVERSE_TUNNELS:
-            res += 'CONTEXT = ['
+            context = ""
             if private and public:
-                res += 'SSH_PUBLIC_KEY = "%s"' % public
+                context += 'SSH_PUBLIC_KEY = "%s"' % public
 
-            if Config.SSH_REVERSE_TUNNELS:
+            if Config.SSH_REVERSE_TUNNELS and not vm.hasPublicNet():
                 if private and public:
-                    res += ", "
+                    context += ", "
                 inst_command = "apt update; apt install -y sshpass curl > /tmp/sshpass.out 2> /tmp/sshpass.err;"
                 inst_command += "yum install sshpass curl -y;"
                 inst_command += "zypper install -y sshpass curl;"
@@ -624,13 +647,14 @@ class OpenNebulaCloudConnector(CloudConnector):
                 command = "which sshpass && which curl || %s" % inst_command
 
                 command += vm.get_boot_curl_commands()[0]
-                res += 'START_SCRIPT = "%s"' % command.replace('"', '\\"')
+                context += 'START_SCRIPT = "%s"' % command.replace('"', '\\"')
 
             if ConfigOpenNebula.TEMPLATE_CONTEXT:
                 if private and public or Config.SSH_REVERSE_TUNNELS:
-                    res += ", "
-                res += ConfigOpenNebula.TEMPLATE_CONTEXT
-            res += ']'
+                    context += ", "
+                context += ConfigOpenNebula.TEMPLATE_CONTEXT
+            if context:
+                res += 'CONTEXT = [%s]' % context
 
         self.log_debug("Template: " + res)
 

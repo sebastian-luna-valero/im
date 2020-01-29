@@ -55,6 +55,14 @@ class DeletedVMException(Exception):
         self.message = msg
 
 
+class IncorrectStateException(Exception):
+    """ Invalid State. """
+
+    def __init__(self, msg="Invalid State to perform this operation."):
+        Exception.__init__(self, msg)
+        self.message = msg
+
+
 class InfrastructureInfo:
     """
     Stores all the information about a registered infrastructure.
@@ -107,6 +115,10 @@ class InfrastructureInfo:
         """ List of URLs of snapshots made to this Inf that must be deleted on finalization """
         self.num = 0
         """ Internal number of this infrastructure """
+        self.adding = False
+        """Flag to specify that this Inf is adding resources """
+        self.deleting = False
+        """Flag to specify that this Inf is deleting resources """
 
     def serialize(self):
         with self._lock:
@@ -116,6 +128,8 @@ class InfrastructureInfo:
         del odict['_lock']
         del odict['ctxt_tasks']
         del odict['conf_threads']
+        del odict['adding']
+        del odict['deleting']
         if 'last_access' in odict:
             del odict['last_access']
         if odict['vm_master']:
@@ -144,6 +158,8 @@ class InfrastructureInfo:
             dic['auth'] = Authentication.deserialize(dic['auth'])
         if dic['radl']:
             dic['radl'] = parse_radl(dic['radl'])
+        else:
+            dic['radl'] = RADL()
         if 'extra_info' in dic and dic['extra_info'] and "TOSCA" in dic['extra_info']:
             try:
                 dic['extra_info']['TOSCA'] = Tosca.deserialize(dic['extra_info']['TOSCA'])
@@ -162,6 +178,8 @@ class InfrastructureInfo:
             if vm.im_id == vm_master_id:
                 newinf.vm_master = vm
             newinf.vm_list.append(vm)
+        newinf.adding = False
+        newinf.deleting = False
         return newinf
 
     @staticmethod
@@ -177,12 +195,11 @@ class InfrastructureInfo:
             newinf.auth = Authentication.deserialize(dic['auth'])
         return newinf
 
-    def destroy(self, auth, delete_list=None):
+    def destroy_vms(self, auth):
         """
-        Destroy the VMs listed in delete_list or all if not specified
+        Destroy all the VMs
         """
-        if delete_list is None:
-            delete_list = list(reversed(self.get_vm_list()))
+        delete_list = list(reversed(self.get_vm_list()))
 
         exceptions = []
         if Config.MAX_SIMULTANEOUS_LAUNCHES > 1:
@@ -225,6 +242,27 @@ class InfrastructureInfo:
         # Create a new empty queue
         with self._lock:
             self.ctxt_tasks = PriorityQueue()
+
+    def destroy(self, auth, force=False):
+        """
+        Destroy the infrastructure
+        """
+        InfrastructureInfo.logger.info("Destroying the Inf ID: " + str(self.id))
+        try:
+            # First stop ctxt processes
+            self.stop()
+            # Destroy the Infrastructure
+            self.destroy_vms(auth)
+        except Exception as ex:
+            if not force:
+                raise ex
+        finally:
+            self.set_deleting(False)
+        # Set the Infrastructure as deleted
+        self.delete()
+        InfrastructureInfo.logger.info("Inf ID: %s: Successfully destroyed" % self.id)
+        IM.InfrastructureList.InfrastructureList.save_data(self.id)
+        IM.InfrastructureList.InfrastructureList.remove_inf(self)
 
     def get_cont_out(self):
         """
@@ -550,7 +588,7 @@ class InfrastructureInfo:
             ctxt_task.append((-5, 0, self, ['kill_ctxt_processes']))
             ctxt_task.append((-4, 0, self, ['check_vm_ips']))
             ctxt_task.append((-3, 0, self, ['wait_master']))
-            ctxt_task.append((-2, 0, self, ['configure_master']))
+            ctxt_task.append((-2, 0, self, ['configure_master', 'wait_all_vm_ips']))
             ctxt_task.append((-1, 0, self, ['generate_playbooks_and_hosts']))
 
             use_dist = len(self.get_vm_list()) > Config.VM_NUM_USE_CTXT_DIST
@@ -643,6 +681,9 @@ class InfrastructureInfo:
                 if self_im_auth['password'] != password:
                     return False
 
+                # In case of OIDC token update it in each call to get a fresh version
+                self_im_auth['token'] = other_im_auth['token']
+
             if (self_im_auth['username'].startswith(InfrastructureInfo.OPENID_USER_PREFIX) and
                     'token' not in other_im_auth):
                 # This is a OpenID user do not enable to get data using user/pass creds
@@ -668,3 +709,22 @@ class InfrastructureInfo:
             return (datetime.now() - self.last_access > delay)
         else:
             return False
+
+    def set_deleting(self, value=True):
+        """
+        Set this inf as deleting
+        """
+        with self._lock:
+            if self.adding:
+                raise IncorrectStateException()
+            self.deleting = value
+
+    def set_adding(self, value=True):
+        """
+        Set this inf as adding
+        """
+        with self._lock:
+            if self.deleting:
+                self.add_cont_msg("Infrastructure deleted. Do not add resources.")
+                raise Exception("Infrastructure deleted. Do not add resources.")
+            self.adding = value

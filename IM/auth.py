@@ -15,6 +15,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
+import re
 
 
 class Authentication:
@@ -40,12 +41,19 @@ class Authentication:
         else:
             self.auth_list = auth_data
 
+        for auth in self.auth_list:
+            if 'id' in auth and auth['id']:
+                pattern = re.compile(r'[a-zA-Z_.][\w\d_.-]*')
+                if not pattern.match(auth['id']):
+                    raise Exception('Incorrect value in auth item id: %s' % auth['id'])
+
     def getAuthInfo(self, auth_type, host=None):
         """
         Get the auth data of the specified type
 
         Arguments:
            - auth_type(str): The auth type
+           - host(str): The host of the auth (optional)
 
         Returns: a list with all the auth data for the specified type
         """
@@ -75,13 +83,14 @@ class Authentication:
                 res.append(auth)
         return res
 
-    def compare(self, other_auth, auth_type):
+    def compare(self, other_auth, auth_type, host=None):
         """
         Compare this auth object with other_auth for the specified type
 
         Arguments:
            - other_auth(:py:class:`Authentication`): The Authentication object to compare
            - auth_type(str): The auth type
+           - host(str): The host of the auth (optional)
 
         Returns: True if the auth are equal or False otherwise
         """
@@ -89,14 +98,24 @@ class Authentication:
             auth_with_type = None
             for auth in self.auth_list:
                 if auth['type'] == auth_type:
-                    auth_with_type = auth
-                    break
+                    if host:
+                        if 'host' in auth and auth['host'].find(host) != -1:
+                            auth_with_type = auth
+                            break
+                    else:
+                        auth_with_type = auth
+                        break
 
             other_auth_with_type = None
             for auth in other_auth.auth_list:
                 if auth['type'] == auth_type:
-                    other_auth_with_type = auth
-                    break
+                    if host:
+                        if 'host' in auth and auth['host'].find(host) != -1:
+                            other_auth_with_type = auth
+                            break
+                    else:
+                        other_auth_with_type = auth
+                        break
 
             if auth_with_type is not None and other_auth_with_type is not None:
                 if len(auth_with_type) != len(other_auth_with_type):

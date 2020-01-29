@@ -24,14 +24,13 @@ import uuid
 import json
 import requests
 from netaddr import IPNetwork, IPAddress
-from distutils.version import LooseVersion
-import xmltodict
 try:
     from urlparse import urlparse
 except ImportError:
     from urllib.parse import urlparse
 from IM.VirtualMachine import VirtualMachine
 from .CloudConnector import CloudConnector
+from IM.AppDB import AppDB
 from IM.config import Config
 
 
@@ -149,10 +148,11 @@ class OCCICloudConnector(CloudConnector):
             # The url has this format: appdb://UPV-GRyCAP/egi.docker.ubuntu.16.04?fedcloud.egi.eu
             # Get the Site url from the AppDB
             site_name = url[1]
-            image_name = url[2][1:]
-            vo_name = url[4]
-            site_id = self.get_site_id(site_name)
-            _, site_url = self.get_image_id_and_site_url(site_id, image_name, vo_name)
+            site_id = AppDB.get_site_id(site_name)
+            if not site_id:
+                self.log_error("No site ID returned from EGI AppDB for site: %s." % site_name)
+                return None
+            site_url = AppDB.get_site_url(site_id)
 
         if ((protocol in ['https', 'http'] and url[2] and url[0] + "://" + url[1] == cloud_url) or
                 (protocol == "appdb" and site_url.startswith(cloud_url))):
@@ -382,7 +382,7 @@ class OCCICloudConnector(CloudConnector):
             return (False, "No location for networkinterface category.")
 
         try:
-            net_id = "imnet.%s" % str(uuid.uuid1())
+            net_id = "imnet-%s" % str(uuid.uuid1())
 
             body = 'Category: networkinterface;scheme="http://schemas.ogf.org/occi/infrastructure#";class="kind"\n'
             pool_name = self.get_floating_pool(occi_info)
@@ -785,8 +785,8 @@ class OCCICloudConnector(CloudConnector):
             site_name = url[1]
             image_name = url[2][1:]
             vo_name = url[4]
-            site_id = self.get_site_id(site_name)
-            os_tpl, _ = self.get_image_id_and_site_url(site_id, image_name, vo_name)
+            site_id = AppDB.get_site_id(site_name)
+            os_tpl = AppDB.get_image_id(site_id, image_name, vo_name)
         else:
             # Get the Image ID from the last part of the path
             os_tpl = os.path.basename(url[2])
@@ -1089,7 +1089,8 @@ class OCCICloudConnector(CloudConnector):
                     disk_device = "vd" + disk_device[-1]
                     system.setValue("disk." + str(cont) + ".device", disk_device)
                 self.log_info("Creating a %d GB volume for the disk %d" % (int(disk_size), cont))
-                success, volume_id = self.create_volume(int(disk_size), "im-disk-%d" % cont, auth_data, auth_header)
+                storage_name = "im-disk-%s" % str(uuid.uuid1())
+                success, volume_id = self.create_volume(int(disk_size), storage_name, auth_data, auth_header)
 
                 if success:
                     self.log_info("Volume id %s successfuly created." % volume_id)
@@ -1192,18 +1193,7 @@ class OCCICloudConnector(CloudConnector):
 
                 if success:
                     # Remove all public net connections in the Requested RADL
-                    nets_id = [net.id for net in vm.requested_radl.networks if net.isPublic()]
-                    system = vm.requested_radl.systems[0]
-
-                    i = 0
-                    while system.getValue('net_interface.%d.connection' % i):
-                        f = system.getFeature("net_interface.%d.connection" % i)
-                        if f.value in nets_id:
-                            system.delValue('net_interface.%d.connection' % i)
-                            if system.getValue('net_interface.%d.ip' % i):
-                                system.delValue('net_interface.%d.ip' % i)
-                        i += 1
-
+                    vm.delete_public_nets(vm.requested_radl)
                     return True, ""
                 else:
                     return False, msg
@@ -1246,7 +1236,7 @@ class OCCICloudConnector(CloudConnector):
             if auth_header:
                 headers.update(auth_header)
 
-            disk_id = "imdisk.%s" % str(uuid.uuid1())
+            disk_id = "imdisk-%s" % str(uuid.uuid1())
 
             body = 'Category: storagelink;scheme="http://schemas.ogf.org/occi/infrastructure#";class="kind"\n'
             body += 'X-OCCI-Attribute: occi.core.id="%s"\n' % disk_id
@@ -1265,63 +1255,6 @@ class OCCICloudConnector(CloudConnector):
         except Exception:
             self.log_exception("Error connecting with OCCI server")
             return False
-
-    @staticmethod
-    def appdb_call(path):
-        resp = requests.request("GET", "https://appdb.egi.eu" + path, verify=False)
-        if resp.status_code == 200:
-            resp.text.replace('\n', '')
-            return xmltodict.parse(resp.text)
-        else:
-            return None
-
-    def get_site_id(self, site_name):
-        data = OCCICloudConnector.appdb_call('/rest/1.0/va_providers')
-        if data:
-            for site in data['appdb:appdb']['virtualization:provider']:
-                if site_name == site['provider:name'] and site['@in_production'] == "true":
-                    return site['@id']
-        else:
-            self.log_warn("No data returned from EGI AppDB.")
-
-        self.log_warn("No site ID returned from EGI AppDB for site: %s." % site_name)
-        return None
-
-    def get_image_id_and_site_url(self, site_id, image_name, vo_name=None):
-        res = []
-        data = OCCICloudConnector.appdb_call('/rest/1.0/va_providers/%s' % site_id)
-        if data:
-            if 'provider:endpoint_url' in data['appdb:appdb']['virtualization:provider']:
-                site_url = data['appdb:appdb']['virtualization:provider']["provider:endpoint_url"]
-                if 'provider:image' in data['appdb:appdb']['virtualization:provider']:
-                    for image in data['appdb:appdb']['virtualization:provider']['provider:image']:
-                        if image['@appcname'] == image_name and (not vo_name or image['@voname'] == vo_name):
-                            image_basename = os.path.basename(image['@va_provider_image_id'])
-                            vmiversion = os.path.basename(image['@vmiversion'])
-                            parts = image_basename.split("#")
-                            if len(parts) > 1:
-                                res.append((parts[1], site_url, vmiversion))
-                            else:
-                                res.append((image_basename, site_url, vmiversion))
-            else:
-                self.log_warn("No endpoint_url returned from EGI AppDB for site %s." % site_id)
-        else:
-            self.log_warn("No data returned from EGI AppDB.")
-
-        if res:
-            if len(res) == 1:
-                return res[0][0], res[0][1]
-            else:
-                self.log_debug("There are more that one VMI version. Select the last one.")
-                last = res[0]
-                for elem in res[1:]:
-                    if LooseVersion(elem[2]) >= LooseVersion(last[2]):
-                        last = elem
-                self.log_debug("Return version num: %s" % last[2])
-                return last[0], last[1]
-
-        self.log_warn("No image ID returned from EGI AppDB for image: %s/%s." % (site_id, image_name))
-        return '', ''
 
 
 class KeyStoneAuth:

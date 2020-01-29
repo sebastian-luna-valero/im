@@ -23,6 +23,7 @@ import IM.InfrastructureManager
 from IM.config import Config
 from IM.auth import Authentication
 from IM import __version__ as version
+from IM import get_ex_error
 
 logger = logging.getLogger('InfrastructureManager')
 
@@ -123,7 +124,7 @@ class IMBaseRequest(AsyncRequest):
             return True
         except Exception as ex:
             logger.exception(self._error_mesage)
-            self.set("%s" % getattr(ex, 'message', ex.args[0] if len(ex.args) else repr(ex)))
+            self.set(get_ex_error(ex))
             return False
 
 
@@ -208,8 +209,9 @@ class Request_DestroyInfrastructure(IMBaseRequest):
 
     def _call_function(self):
         self._error_mesage = "Error Destroying Inf."
-        (inf_id, auth_data) = self.arguments
-        return IM.InfrastructureManager.InfrastructureManager.DestroyInfrastructure(inf_id, Authentication(auth_data))
+        (inf_id, auth_data, force, async_call) = self.arguments
+        return IM.InfrastructureManager.InfrastructureManager.DestroyInfrastructure(inf_id, Authentication(auth_data),
+                                                                                    force, async_call)
 
 
 class Request_StopInfrastructure(IMBaseRequest):
@@ -253,8 +255,8 @@ class Request_GetInfrastructureList(IMBaseRequest):
 
     def _call_function(self):
         self._error_mesage = "Error Getting Inf. List."
-        (auth_data) = self.arguments
-        return IM.InfrastructureManager.InfrastructureManager.GetInfrastructureList(Authentication(auth_data))
+        (auth_data, flt) = self.arguments
+        return IM.InfrastructureManager.InfrastructureManager.GetInfrastructureList(Authentication(auth_data), flt)
 
 
 class Request_Reconfigure(IMBaseRequest):

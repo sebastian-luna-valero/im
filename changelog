@@ -516,3 +516,56 @@ IM 1.8.4:
     * Enable to add routes in GCE conn.
     * Fix Issues with Ansible 2.8.
     * Fix error creating FW in GCE conn if outports is empty.
+
+IM 1.8.5:
+    * Enable CIDR selection in network creation in OpenStack conn.
+    * Fix error infrastructure not correctly deleted if destroy is sent in initial stage.
+    * Fix error procesing TOSCA document if a policy does not have properties field.
+    * Fix error listing Routers in OpenStack conn.
+    * Fix error deleting FW in GCE conn.
+    * Fix error in OpenNebula conn in case API endpoint is behind a reverse proxy.
+    * Fix error deleting infra in case of Opennebula 4.8 trying to delete security groups.
+    * Add requirements in FogBow conn.
+    * Enable to specify the cluster to deploy the VM on OpenNebula conn.
+    * Support for adding block storage and networks to running VMs with OpenStack.
+    * Fix problems using tokens with OpenStack.
+    * Fix error in ctxt process testing ssh connection.
+    * Fix error parsing TOSCA in case of implemetation is a dict.
+    * Enable to filter the list of infrastructures.
+    * Optional tenant name for OpenStack using VOMS authentication.
+    * Fix SSH reverse tunnels does not work in IM service with HTTPS.
+    * Enable to specify GPU and SGX in Fogbow conn.
+    * Improve TOSCA network management to create L2 nets.
+    * Fix error attaching a new disk in OCCI conn.
+
+IM 1.8.6:
+    * Fix error in SSH reverse tunnels in case of using IM auth token.
+    * Enable to boot IM in "ReadOnly" modes.
+    * Enable to force the deletion of an infrastructure.
+    * Fix error attaching new disks in OCCI conn in OpenNebula site.
+    * Fix error in Network mapping in case of using CIDR.
+    * Enable to specify GPU and SGX in Fogbow conn.
+    * Fix error assigning target to disks with image url in OpenNebula conn.
+    * Enable to use appdb urls in OpenStack conn.
+    * Fix error loading infra data from DB.
+    * Fix error in hybrid clusters, no WN deployed in external site.
+    * Fix error creating GCE FW.
+    * Enable to specify the snapshot name in disk url in EC2 conn.
+
+IM 1.9.0:
+    * Get device info from disks on OpenStack conn.
+    * Fix error setting keypair name as public_key in the EC2 conn.
+    * Enable to set volume_type in OpenStack conn.
+    * Fixed IP is not attached to the VM in OpenStack conn.
+    * Fix error do not release floating IPs if they are not created by the IM in OpenStack conn.
+    * Fix error new line chars removed in TOSCA values.
+    * Remove added VMs in case that all of them fails in the addition process.
+    * Fix error OpenStack_2_NodeDriver object has no attribute 'get_floating_ip'.
+    * Add deleting state.
+    * Error is shown if a VM does not set the image in case of async creation.
+
+IM 1.9.1:
+    * Improve network creation with wildcard (192.168.*.0/24).
+    * Fix intermittent errors in SSH connections.
+    * Fix ssh_connect_errors count must be reset when a ssh connection is ok.
+    * Fix check_ctxt_process thread dies and contextalization never ends.

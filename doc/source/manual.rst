@@ -17,7 +17,7 @@ IM needs at least Python 2.6 to run, as well as the next libraries:
   and manipulating network addresses.
 * `Requests <http://docs.python-requests.org>`_, A Python library for access REST APIs.
     
-Also, IM uses `Ansible <http://www.ansible.com>`_ (2.0.0 or later) to configure the
+Also, IM uses `Ansible <http://www.ansible.com>`_ (2.4 or later) to configure the
 infrastructure nodes.
  
 These components are usually available from the distribution repositories.
@@ -107,7 +107,7 @@ Then you only have to call the install command of the pip tool with the IM packa
 
 	$ pip install IM
 
-Pip will also install the, non installed, pre-requisites needed. So Ansible 1.4.2 or later will 
+Pip will also install the, non installed, pre-requisites needed. So Ansible 2.4 or later will 
 be installed in the system. Some of the optional packages are also installed please check if some
 of IM features that you need requires to install some of the packages of section "Optional Packages". 
 
@@ -303,6 +303,13 @@ Basic Options
 
    Maximum size in KiB of the log file before being rotated.
    The default value is 10485760.
+
+.. confval:: BOOT_MODE
+
+   This flag set the IM boot mode. 
+   It can be: 0 (Normal) standard IM operation, 1 (ReadOnly) only read operations are allowed,
+   2 (ReadDelete) only read and delete operations are allowed.
+   The default value is 0.
 
 .. _options-default-vm:
 
@@ -508,12 +515,12 @@ OPENID CONNECT OPTIONS
 
 .. confval:: OIDC_CLIENT_ID
 
-   OIDC client ID of the IM service
+   OIDC client ID of the IM service. Only needed in case of setting OIDC_SCOPES.
    The default value is ``''``.
 
 .. confval:: OIDC_CLIENT_SECRET
 
-   OIDC secret of the IM service
+   OIDC secret of the IM service. Only needed in case of setting OIDC_SCOPES.
    The default value is ``''``.
 
 .. confval:: OIDC_SCOPES
@@ -560,6 +567,46 @@ The configuration values under the ``OpenNebula`` section:
 
    Text to add to the ONE Template different to NAME, CPU, VCPU, MEMORY, OS, DISK and CONTEXT
    The default value is ``GRAPHICS = [type="vnc",listen="0.0.0.0"]``. 
+
+
+.. _logging:
+
+Logging Configuration
+^^^^^^^^^^^^^^^^^^^^^
+
+IM uses Python logging library (see the `documentation <https://docs.python.org/2/howto/logging.html>`_).
+You have two options to configure it: use the configuration variables at the IM configuration file or
+use the file ``/etc/im/logging.conf``.
+
+The configuration variables are the following:
+
+.. confval:: LOG_LEVEL 
+
+   Set the level of the log messages: DEBUG, INFO, WARNING, ERROR, CRITICAL
+   The default value is ``'INFO'``.
+
+.. confval:: LOG_FILE
+
+   Set the destination file of the log messages.
+   The default value is ``'/var/log/im/im.log'``.
+
+.. confval:: LOG_FILE_MAX_SIZE 
+
+   Set the maximum file size of the log file. It will be rotated when size exceed this size,
+   with a default depth of 3 files.
+   The default value is ``'10485760'``.
+
+If you need to specify more advanced details of the logging configuration you have to use the file
+``/etc/im/logging.conf``. For example to set a syslogd server as the destination of the log messages::
+
+	[handler_fileHandler]
+	class=logging.handlers.SysLogHandler
+	level=INFO
+	formatter=simpleFormatter
+	args=(('<syslog_ip>', 514),)
+	[formatter_simpleFormatter]
+	format=%(asctime)s - %(hostname)s - %(name)s - %(levelname)s - %(message)s
+	datefmt=
 
 
 Docker Image

@@ -184,10 +184,8 @@ The supported features are:
    
 ``provider_id = <string>``
    Indicate the name of the network in a specific Cloud provider.
-   The default value is ``''``.
-   
-``pool_name = <string>``
-   Indicate the name of floating ip pool to get the external IP (**Only for OpenStack**).
+   In case of setting this field in a public network in an **OpenStack** deployment
+   it specifies the name of floating ip pool to get the external floating IP.
    The default value is ``''``.
 
 ``create = 'yes|no'``
@@ -198,11 +196,20 @@ The supported features are:
 
 ``cidr = <string>``
    Indicate the CIDR of the network (e.g. 10.0.0.0/24) in case of network creation.
+   Wildcards can be used (i.e. 10.*.*.0/24) and the IM will select the first option
+   that is not used in the current Cloud provider.
    The default value is ``''``.
 
 ``sg_name = <string>``
    The name of the Security Group associated with the network that will be created to
    manage the security in this network.
+   The default value is ``''``.
+
+``router = <string>``
+   Add static routes in the network settings. Currently only supported in OpenStack, 
+   GCE and AWS. The format is 'net_cidr, system_name' e.g. '10.1.0.0/16,front' to route
+   all the traffic to the net 10.1.0.0/16 through the front node, or '0.0.0.0/0,front' to 
+   route all the traffic through the front node.
    The default value is ``''``.
 
 System Features
@@ -259,8 +266,8 @@ machine.  The supported features are:
 ``availability_zone``
    Set the availability zone or region where this VM will be launched.
    It only applies to Google Cloud, Microsoft Azure, Amazon AWS, and Fogbow
-   connectors. In the Fogbow case it specifies the manager where the VM will
-   be launched (Glue2CloudComputeManagerID).
+   connectors. In the Fogbow case it specifies the site and cloud where the VM will
+   be launched (in format cloud@site).
 
 ``instance_id``
    Get the instance ID assigned by the Cloud provider for this VM. 
@@ -283,14 +290,17 @@ machine.  The supported features are:
    Set the source of the disk image. The URI designates the cloud provider:
 
    * ``one://<server>:<port>/<image-id>``, for OpenNebula;
-   * ``ost://<server>:<port>/<ami-id>``, for OpenStack;
+   * ``one://<server>:<port>/<image-name>``, for OpenNebula;
+   * ``ost://<server>:<port>/<image-id>``, for OpenStack;
    * ``aws://<region>/<ami-id>``, for Amazon Web Service;
+   * ``aws://<region>/<snapshot-id>``, for Amazon Web Service;
+   * ``aws://<region>/<snapshot-name>``, for Amazon Web Service;
    * ``gce://<region>/<image-id>``, for Google Cloud;
    * ``azr://<image-id>``, for Microsoft Azure Clasic;
    * ``azr://<publisher>/<offer>/<sku>/<version>``, for Microsoft Azure;
    * ``azr://[snapshots|disk]/<rgname>/<diskname>``, for Microsoft Azure;
    * ``<fedcloud_endpoint_url>/<image_id>``, for FedCloud OCCI connector.
-   * ``appdb://<site_name>/<apc_name>?<vo_name>``, for FedCloud OCCI connector using AppDB info (from ver. 1.6.0).
+   * ``appdb://<site_name>/<apc_name>?<vo_name>``, for FedCloud OCCI or OpenStack connector using AppDB info (from vers. 1.6.0 and 1.8.6).
    * ``docker://<docker_image>``, for Docker images.
    * ``fbw://<fns_server>/<image-id>``, for FogBow images.
 
@@ -387,6 +397,11 @@ machine.  The supported features are:
    * Git Repo: ``ansible.modules.git+https://github.com/micafer/ansible-role-hadoop|hadoop``: The user specifies a Git repo
      (using the git scheme in the URL) afther the string ``ansible.modules.``. Furthermore the 
      user can specify the rolename using a ``|`` afther the url, as shown in the example.
+
+``nat_instance = yes|no``
+   Set that this instance will be used as a NAT router for a set of nodes. 
+   It will configure the node to enable nat with the appropriate iptables rules
+   (experimental).
 
 Disk Management
 ^^^^^^^^^^^^^^^

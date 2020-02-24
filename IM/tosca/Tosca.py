@@ -179,25 +179,28 @@ class Tosca:
         """
         priv_net_cloud_map = {}
 
+        # in case of an AddResource
+        # first process already deployed VMs
+        systems = [(None, []), (radl, [])]
+        if inf_info:
+            systems[0] = (inf_info.radl, [])
+            for elem in inf_info.get_vm_list_by_system_name().items():
+                systems[0][1].append(elem[1][-1].info.systems[0])
+
         # make that deployed nodes are checked first
         to_deploy = [d.id for d in radl.deploys]
-        systems = [[s for s in radl.systems if s.name not in to_deploy],
-                   [s for s in radl.systems if s.name in to_deploy]]
+        systems[1][1].extend([s for s in radl.systems if s.name in to_deploy])
 
-        for s1 in systems:
+        for r1, s1 in systems:
             for s in s1:
                 image = s.getValue("disk.0.image.url")
-                # in case of an AddResource
-                if inf_info:
-                    vm_list = inf_info.get_vm_list_by_system_name()
-                    if s.name in vm_list and vm_list[s.name][-1].info.systems[0].getValue("disk.0.image.url"):
-                        image = vm_list[s.name][-1].info.systems[0].getValue("disk.0.image.url")
+
                 if image:
                     url = urlparse(image)
                     protocol = url[0]
                     src_host = url[1].split(':')[0]
                     for net_id in s.getNetworkIDs():
-                        net = radl.get_network_by_id(net_id)
+                        net = r1.get_network_by_id(net_id)
                         if not net.isPublic():
                             if net_id in priv_net_cloud_map:
                                 if priv_net_cloud_map[net_id] != "%s://%s" % (protocol, src_host):
@@ -390,8 +393,7 @@ class Tosca:
                 system.setValue('net_interface.%d.connection' % num, net_name)
                 # This is not a normative property
                 if dns_name:
-                    system.setValue('net_interface.%d.dns_name' %
-                                    num, dns_name)
+                    system.setValue('net_interface.%d.dns_name' % num, dns_name)
                 if ip:
                     system.setValue('net_interface.%d.ip' % num, ip)
 
@@ -1219,7 +1221,7 @@ class Tosca:
         network_router = self._final_function_result(node.get_property_value('gateway_ip'), node)
 
         # TODO: get more properties -> must be implemented in the RADL
-        if nework_type.lower() == "public":
+        if nework_type and nework_type.lower() == "public":
             res.setValue("outbound", "yes")
 
         if network_name:
@@ -1388,7 +1390,17 @@ class Tosca:
                 link = None
                 for requires in port.requirements:
                     binding = requires.get('binding', binding)
+                    if isinstance(binding, dict):
+                        if "node" in binding:
+                            binding = binding["node"]
+                        else:
+                            raise Exception("Incorrect binding in Port node %s" % node.name)
                     link = requires.get('link', link)
+                    if isinstance(link, dict):
+                        if "node" in link:
+                            link = link["node"]
+                        else:
+                            raise Exception("Incorrect link in Port node %s" % node.name)
 
                 if binding == node.name:
                     ip = self._final_function_result(port.get_property_value('ip_address'), port)
@@ -1532,9 +1544,8 @@ class Tosca:
                 else:
                     yaml1[k] = Tosca._merge_yaml(yaml1[k], v)
         elif isinstance(yaml1, list) and isinstance(yaml2, (list, tuple)):
-            for v in yaml2:
-                if v not in yaml1:
-                    yaml1.append(v)
+            for i, v in enumerate(yaml2):
+                yaml1[i] = Tosca._merge_yaml(yaml1[i], v)
         else:
             yaml1 = yaml2
 

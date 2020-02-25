@@ -609,6 +609,39 @@ If you need to specify more advanced details of the logging configuration you ha
 	datefmt=
 
 
+Reverse SSH tunnels
+^^^^^^^^^^^^^^^^^^^
+
+IM enables to configure hybrid infrastructures with VMs only with private IPs deployed in different cloud providers.
+
+The configuration variables are the following:
+
+.. confval:: SSH_REVERSE_TUNNELS
+
+   This flag enables/disables the usage of reverse SSH tunnels to connect from non master VMs without public IPs that are
+   deployed in a different cloud provider to the master. It enables configuring hybrid deployments using only 1 public IP.
+   The default value is ``False``.
+
+.. confval:: SSH_PORT
+
+   Set the SSH port in the IM hosting machine to be used to create reverse tunnels from VMs without public IP.
+   The IM hosting machine/container must be properly configured to accept SSH connections using this port.
+   If the port is set to 0, this functionality is disabled.
+   The default value is ``0``.
+
+.. confval:: SSH_USERNAME
+
+   Set the username to connect to the IM hosting machine to be used to create reverse tunnels.
+   The IM hosting machine/container must be properly configured to accept SSH connections using this username.
+   The default value is ``''``.
+
+.. confval:: SSH_PASSWORD
+
+   Set the password to connect to the IM hosting machine to be used to create reverse tunnels.
+   The IM hosting machine/container must be properly configured to accept SSH connections using this password.
+   The default value is ``''``.
+
+
 Docker Image
 ============
 

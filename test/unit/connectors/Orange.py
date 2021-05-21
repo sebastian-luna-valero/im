@@ -573,6 +573,7 @@ class TestOrangeConnector(TestCloudConnectorBase):
 
         inf = MagicMock()
         inf.id = "infid"
+        inf.get_name.return_value = "infname"
         inf.radl = radl
         vm = VirtualMachine(inf, "1", ora_cloud.cloud, radl, radl, ora_cloud, 1)
 
@@ -600,18 +601,18 @@ class TestOrangeConnector(TestCloudConnectorBase):
         driver.ex_detach_floating_ip_from_node.return_value = True
 
         sg1 = MagicMock()
-        sg1.name = "im-infid-private"
+        sg1.name = "im-infname-private"
         sg1.description = "Security group created by the IM"
         sg2 = MagicMock()
-        sg2.name = "im-infid-public"
+        sg2.name = "im-infname-public"
         sg2.description = "Security group created by the IM"
         sg3 = MagicMock()
-        sg3.name = "im-infid"
+        sg3.name = "im-infname"
         sg3.description = ""
         driver.ex_list_security_groups.return_value = [sg1, sg2, sg3]
 
         net1 = MagicMock()
-        net1.name = "im-infid-private"
+        net1.name = "im-infname-private"
         net1.cidr = None
         net1.extra = {'subnets': ["subnet1"]}
         net2 = MagicMock()
@@ -640,9 +641,9 @@ class TestOrangeConnector(TestCloudConnectorBase):
 
         self.assertEqual(node.destroy.call_args_list, [call()])
         self.assertEqual(driver.detach_volume.call_args_list[0][0][0], volume)
-        self.assertEqual(driver.ex_remove_security_group_from_node.call_args_list[0][0][0].name, "im-infid")
-        self.assertEqual(driver.ex_remove_security_group_from_node.call_args_list[1][0][0].name, "im-infid-public")
-        self.assertEqual(driver.ex_remove_security_group_from_node.call_args_list[2][0][0].name, "im-infid-private")
+        self.assertEqual(driver.ex_remove_security_group_from_node.call_args_list[0][0][0].name, "im-infname")
+        self.assertEqual(driver.ex_remove_security_group_from_node.call_args_list[1][0][0].name, "im-infname-public")
+        self.assertEqual(driver.ex_remove_security_group_from_node.call_args_list[2][0][0].name, "im-infname-private")
         self.assertEqual(driver.ex_del_router_subnet.call_args_list[0][0][0], router)
         self.assertEqual(driver.ex_del_router_subnet.call_args_list[0][0][1].id, "subnet1")
         self.assertEqual(driver.ex_delete_network.call_args_list[0][0][0], net1)

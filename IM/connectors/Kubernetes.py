@@ -361,7 +361,7 @@ class KubernetesCloudConnector(CloudConnector):
 
         res = []
         # First create the namespace for the infrastructure
-        namespace = inf.id
+        namespace = inf.get_name()
         headers = {'Content-Type': 'application/json'}
         uri = self._get_api_url(auth_data, "", "")
         with inf._lock:
@@ -434,7 +434,7 @@ class KubernetesCloudConnector(CloudConnector):
 
     def _get_pod(self, vm, auth_data):
         try:
-            namespace = vm.inf.id
+            namespace = vm.inf.get_name()
             pod_name = vm.id
 
             uri = self._get_api_url(auth_data, namespace, "/pods/" + pod_name)
@@ -511,11 +511,11 @@ class KubernetesCloudConnector(CloudConnector):
         return success, msg
 
     def _delete_namespace(self, vm, auth_data):
-        self.log_debug("Deleting Namespace: %s" % vm.inf.id)
-        uri = self._get_api_url(auth_data, vm.inf.id, '')
+        self.log_debug("Deleting Namespace: %s" % vm.inf.get_name())
+        uri = self._get_api_url(auth_data, vm.inf.get_name(), '')
         resp = self.create_request('DELETE', uri, auth_data)
         if resp.status_code == 404:
-            self.log_warn("Trying to remove a non existing Namespace id: " + vm.inf.id)
+            self.log_warn("Trying to remove a non existing Namespace id: " + vm.inf.get_name())
         elif resp.status_code != 200:
             self.log_error("Error deleting Namespace")
             return False
@@ -523,7 +523,7 @@ class KubernetesCloudConnector(CloudConnector):
 
     def _delete_service(self, vm, auth_data):
         try:
-            namespace = vm.inf.id
+            namespace = vm.inf.get_name()
             service_name = vm.id
 
             self.log_debug("Deleting Service: %s/%s" % (namespace, service_name))
@@ -543,7 +543,7 @@ class KubernetesCloudConnector(CloudConnector):
 
     def _delete_pod(self, vm, auth_data):
         try:
-            namespace = vm.inf.id
+            namespace = vm.inf.get_name()
             pod_name = vm.id
 
             self.log_debug("Deleting POD: %s/%s" % (namespace, pod_name))
@@ -599,7 +599,7 @@ class KubernetesCloudConnector(CloudConnector):
                 return (True, vm)
 
             # Create the container
-            namespace = vm.inf.id
+            namespace = vm.inf.get_name()
             pod_name = vm.id
 
             headers = {'Content-Type': 'application/json-patch+json'}

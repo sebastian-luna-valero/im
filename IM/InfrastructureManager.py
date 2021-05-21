@@ -34,7 +34,7 @@ from IM.config import Config
 from IM.VirtualMachine import VirtualMachine
 
 from radl import radl_parse
-from radl.radl import Feature, RADL
+from radl.radl import Feature, RADL, description
 from radl.radl_json import dump_radl as dump_radl_json
 
 from IM.openid.JWT import JWT
@@ -1446,6 +1446,7 @@ class InfrastructureManager:
         IM.InfrastructureList.InfrastructureList.save_data(inf.id)
         im_user = auth.getAuthInfo("InfrastructureManager")[0]['username']
         InfrastructureManager.logger.info("Creating new Inf ID: %s by %s." % (inf.id, im_user))
+        radl.description = description(inf.name)
 
         # Add the resources in radl_data
         try:

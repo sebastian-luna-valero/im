@@ -90,12 +90,12 @@ class TestKubernetesConnector(TestCloudConnectorBase):
                 resp.text = ('{"metadata": {"namespace":"namespace", "name": "name"}, "status": '
                              '{"phase":"Running", "hostIP": "158.42.1.1", "podIP": "10.0.0.1"}, '
                              '"spec": {"volumes": [{"persistentVolumeClaim": {"claimName" : "cname"}}]}}')
-            if url == "/api/v1/namespaces/infid":
+            if url == "/api/v1/namespaces/infname":
                 resp.status_code = 200
         elif method == "POST":
             if url.endswith("/pods"):
                 resp.status_code = 201
-                resp.text = '{"metadata": {"namespace":"namespace", "name": "name"}}'
+                resp.text = '{"metadata": {"namespace":"infname", "name": "name"}}'
             elif url.endswith("/services"):
                 resp.status_code = 201
             elif url.endswith("/namespaces/"):
@@ -105,7 +105,7 @@ class TestKubernetesConnector(TestCloudConnectorBase):
                 resp.status_code = 200
             elif url.endswith("/services/1"):
                 resp.status_code = 200
-            elif url.endswith("/namespaces/namespace"):
+            elif url.endswith("/namespaces/infname"):
                 resp.status_code = 200
             elif "persistentvolumeclaims" in url:
                 resp.status_code = 200
@@ -144,8 +144,9 @@ class TestKubernetesConnector(TestCloudConnectorBase):
 
         requests.side_effect = self.get_response
 
-        inf = MagicMock(["id", "_lock", "add_vm"])
+        inf = MagicMock(["id", "_lock", "add_vm", "get_name"])
         inf.id = "infid"
+        inf.get_name.return_value = "infname"
         res = kube_cloud.launch(inf, radl, radl, 1, auth)
         success, _ = res[0]
         self.assertTrue(success, msg="ERROR: launching a VM.")
@@ -174,7 +175,8 @@ class TestKubernetesConnector(TestCloudConnectorBase):
         kube_cloud = self.get_kube_cloud()
 
         inf = MagicMock()
-        inf.id = "namespace"
+        inf.id = "infid"
+        inf.get_name.return_value = "infname"
         vm = VirtualMachine(inf, "1", kube_cloud.cloud, radl, radl, kube_cloud, 1)
 
         requests.side_effect = self.get_response
@@ -215,7 +217,8 @@ class TestKubernetesConnector(TestCloudConnectorBase):
         kube_cloud = self.get_kube_cloud()
 
         inf = MagicMock()
-        inf.id = "namespace"
+        inf.id = "infid"
+        inf.get_name.return_value = "infname"
         vm = VirtualMachine(inf, "1", kube_cloud.cloud, radl, radl, kube_cloud, 1)
 
         requests.side_effect = self.get_response
@@ -232,7 +235,8 @@ class TestKubernetesConnector(TestCloudConnectorBase):
         kube_cloud = self.get_kube_cloud()
 
         inf = MagicMock()
-        inf.id = "namespace"
+        inf.id = "infid"
+        inf.get_name.return_value = "infname"
         vm = VirtualMachine(inf, "1", kube_cloud.cloud, "", "", kube_cloud, 1)
 
         requests.side_effect = self.get_response

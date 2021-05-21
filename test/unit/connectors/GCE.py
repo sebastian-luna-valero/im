@@ -189,8 +189,8 @@ class TestGCEConnector(TestCloudConnectorBase):
         self.assertEqual(driver.create_node.call_args_list[0][1]['ex_disks_gce_struct'][1]['autoDelete'], True)
         self.assertEqual(driver.create_node.call_args_list[0][1]['ex_disks_gce_struct'][2]['deviceName'], "hdc")
         self.assertEqual(driver.create_node.call_args_list[0][1]['ex_disks_gce_struct'][2]['autoDelete'], False)
-        self.assertEqual(driver.ex_create_firewall.call_args_list[0][0][0], "im-%s-default-all" % inf.id)
-        self.assertEqual(driver.ex_create_firewall.call_args_list[1][0][0], "im-%s-default" % inf.id)
+        self.assertEqual(driver.ex_create_firewall.call_args_list[0][0][0], "im-%s-default-all" % inf.name)
+        self.assertEqual(driver.ex_create_firewall.call_args_list[1][0][0], "im-%s-default" % inf.name)
         self.assertEqual(driver.ex_create_firewall.call_args_list[0][0][1], [{'IPProtocol': 'udp', 'ports': '1-65535'},
                                                                              {'IPProtocol': 'tcp', 'ports': '1-65535'},
                                                                              {'IPProtocol': 'icmp'}])
@@ -241,7 +241,7 @@ class TestGCEConnector(TestCloudConnectorBase):
         self.assertEqual(msg, "ERROR: Error msg")
         self.assertEqual(driver.ex_destroy_address.call_count, 1)
         self.assertEqual(driver.ex_destroy_address.call_args_list, [call('ip')])
-        self.assertEqual(driver.ex_create_network.call_args_list[0][0][0], "im-%s-net2" % inf.id)
+        self.assertEqual(driver.ex_create_network.call_args_list[0][0][0], "im-%s-net2" % inf.name)
         self.assertEqual(driver.ex_create_network.call_args_list[0][0][1], "10.0.2.0/24")
 
     @patch('libcloud.compute.drivers.gce.GCENodeDriver')
@@ -394,6 +394,7 @@ class TestGCEConnector(TestCloudConnectorBase):
 
         inf = MagicMock()
         inf.id = "infid"
+        inf.get_name.return_value = "infname"
         vm = VirtualMachine(inf, "1", gce_cloud.cloud, radl, radl, gce_cloud, 1)
 
         driver = MagicMock()
@@ -421,17 +422,17 @@ class TestGCEConnector(TestCloudConnectorBase):
         dns_driver.iterate_records.return_value = [record]
 
         net = MagicMock()
-        net.name = "im-infid-id"
+        net.name = "im-infname-id"
         net.destroy.return_value = True
         driver.ex_list_networks.return_value = [net]
 
         fw = MagicMock()
-        fw.name = "im-infid-id"
+        fw.name = "im-infname-id"
         fw.destroy.return_value = True
         driver.ex_list_firewalls.return_value = [fw]
 
         route = MagicMock()
-        route.name = "im-infid-id"
+        route.name = "im-infname-id"
         route.destroy.return_value = True
         driver.ex_list_routes.return_value = [route]
 

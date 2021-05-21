@@ -475,6 +475,8 @@ class CloudConnector(LoggerMixin):
             tags["IM-USER"] = im_username
         if inf:
             tags["IM_INFRA_ID"] = inf.id
+            if inf.name:
+                tags["IM_INFRA_NAME"] = inf.name
         return tags
 
     @staticmethod

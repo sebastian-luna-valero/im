@@ -178,9 +178,9 @@ class TestEC2Connector(TestCloudConnectorBase):
         self.assertTrue(success, msg="ERROR: launching a VM.")
         self.assertNotIn("ERROR", self.log.getvalue(), msg="ERROR found in log: %s" % self.log.getvalue())
         self.assertEquals(len(conn.create_security_group.call_args_list), 3)
-        self.assertEquals(conn.create_security_group.call_args_list[0][0][0], "im-%s" % inf.id)
+        self.assertEquals(conn.create_security_group.call_args_list[0][0][0], "im-%s" % inf.name)
         self.assertEquals(conn.create_security_group.call_args_list[1][0][0], "sgname")
-        self.assertEquals(conn.create_security_group.call_args_list[2][0][0], "im-%s-net2" % inf.id)
+        self.assertEquals(conn.create_security_group.call_args_list[2][0][0], "im-%s-net2" % inf.name)
 
         # Check the case that we do not use VPC
         radl_data = """

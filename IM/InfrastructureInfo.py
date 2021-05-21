@@ -385,6 +385,9 @@ class InfrastructureInfo:
                 # Overwrite to create only the last deploys
                 self.radl.deploys = radl.deploys
 
+            if not self.radl.description:
+                self.radl.description = radl.description
+
             # Associate private networks with cloud providers
             for d, _, _ in deployed_vms:
                 for private_net in [net.id for net in radl.networks if not net.isPublic() and

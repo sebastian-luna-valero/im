@@ -223,7 +223,7 @@ class DockerCloudConnector(CloudConnector):
             if not net.isPublic() and num_conn is not None:
                 net_name = net.getValue('provider_id')
                 if not net_name:
-                    net_name = "im_%s_%s" % (vm.inf.id, net_name)
+                    net_name = "im_%s_%s" % (vm.inf.get_name(), net_name)
                 net_id = self._get_net_id(net_name, auth_data)
                 (hostname, default_domain) = vm.getRequestedNameIface(num_conn,
                                                                       default_hostname=Config.DEFAULT_VM_NAME,
@@ -291,7 +291,7 @@ class DockerCloudConnector(CloudConnector):
                 (hostname, default_domain) = vm.getRequestedNameIface(num_conn,
                                                                       default_hostname=Config.DEFAULT_VM_NAME,
                                                                       default_domain=Config.DEFAULT_DOMAIN)
-                net_name = "im_%s_%s" % (vm.inf.id, net_name)
+                net_name = "im_%s_%s" % (vm.inf.get_name(), net_name)
                 cont_data['NetworkingConfig']['EndpointsConfig'][net_name] = {}
                 aliases = [hostname, "%s.%s" % (hostname, default_domain)]
                 cont_data['NetworkingConfig']['EndpointsConfig'][net_name]['Aliases'] = aliases
@@ -366,7 +366,7 @@ class DockerCloudConnector(CloudConnector):
 
                 net_name = net.getValue('provider_id')
                 if not net_name:
-                    net_name = "im_%s_%s" % (inf.id, net.id)
+                    net_name = "im_%s_%s" % (inf.get_name(), net.id)
                     net.setValue('provider_id', net_name)
 
                 data = {"Name": net_name, "CheckDuplicate": True}
@@ -435,7 +435,7 @@ class DockerCloudConnector(CloudConnector):
 
                 net_name = net.getValue('provider_id')
                 if not net_name:
-                    net_name = "im_%s_%s" % (vm.inf.id, net.id)
+                    net_name = "im_%s_%s" % (vm.inf.get_name(), net.id)
                     net.setValue('provider_id', net_name)
 
                 net_id = self._get_net_id(net_name, auth_data)
@@ -462,7 +462,7 @@ class DockerCloudConnector(CloudConnector):
                     (hostname, default_domain) = vm.getRequestedNameIface(num_conn,
                                                                           default_hostname=Config.DEFAULT_VM_NAME,
                                                                           default_domain=Config.DEFAULT_DOMAIN)
-                    net_name = "im_%s_%s" % (vm.inf.id, net_name)
+                    net_name = "im_%s_%s" % (vm.inf.get_name(), net_name)
                     net_id = self._get_net_id(net_name, auth_data)
                     headers = {'Content-Type': 'application/json'}
                     aliases = [hostname, "%s.%s" % (hostname, default_domain)]

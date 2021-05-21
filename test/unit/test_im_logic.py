@@ -153,6 +153,10 @@ class TestIM(unittest.TestCase):
         """Create infrastructure with empty RADL."""
         auth0 = self.getAuth([0])
         infId = IM.CreateInfrastructure("", auth0)
+        # Test inf name generation
+        radl_str = IM.GetInfrastructureRADL(infId, auth0)
+        radl = parse_radl(radl_str)
+        self.assertGreater(len(radl.description.id), 8)
         IM.DestroyInfrastructure(infId, auth0)
 
     def test_inf_creation1(self):

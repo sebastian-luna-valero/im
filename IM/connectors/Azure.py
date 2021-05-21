@@ -742,25 +742,25 @@ class AzureCloudConnector(CloudConnector):
             raise Exception("Incorrect image url: it must be snapshot or disk.")
 
         resource_client = ResourceManagementClient(credentials, subscription_id)
-        storage_account_name = self.get_storage_account_name(inf.id)
+        storage_account_name = self.get_storage_account_name(inf.get_name())
 
         tags = self.get_instance_tags(radl.systems[0], auth_data, inf)
 
         with inf._lock:
             # Create resource group for the Infrastructure if it does not exists
-            if not self.get_rg("rg-%s" % inf.id, credentials, subscription_id):
-                self.log_info("Creating Inf RG: %s" % "rg-%s" % inf.id)
-                resource_client.resource_groups.create_or_update("rg-%s" % inf.id, {'location': location})
+            if not self.get_rg("rg-%s" % inf.get_name(), credentials, subscription_id):
+                self.log_info("Creating Inf RG: %s" % "rg-%s" % inf.get_name())
+                resource_client.resource_groups.create_or_update("rg-%s" % inf.get_name(), {'location': location})
 
             # Create an storage_account per Infrastructure
-            storage_account = self.get_storage_account("rg-%s" % inf.id, storage_account_name,
+            storage_account = self.get_storage_account("rg-%s" % inf.get_name(), storage_account_name,
                                                        credentials, subscription_id)
 
             if not storage_account:
                 self.log_info("Creating storage account: %s" % storage_account_name)
                 try:
                     storage_client = StorageManagementClient(credentials, subscription_id)
-                    storage_client.storage_accounts.create("rg-%s" % inf.id,
+                    storage_client.storage_accounts.create("rg-%s" % inf.get_name(),
                                                            storage_account_name,
                                                            {'sku': {'name': 'standard_lrs'},
                                                             'kind': 'storage',
@@ -768,9 +768,9 @@ class AzureCloudConnector(CloudConnector):
                                                            ).wait()
                 except Exception:
                     self.log_exception("Error creating storage account: %s" % storage_account)
-                    self.delete_resource_group("rg-%s" % inf.id, resource_client)
+                    self.delete_resource_group("rg-%s" % inf.get_name(), resource_client)
 
-            subnets = self.create_nets(radl, credentials, subscription_id, "rg-%s" % inf.id, inf)
+            subnets = self.create_nets(radl, credentials, subscription_id, "rg-%s" % inf.get_name(), inf)
 
         res = []
         vms = self.create_vms(inf, radl, requested_radl, num_vm, location,
@@ -939,12 +939,12 @@ class AzureCloudConnector(CloudConnector):
 
             # if it is the last VM delete the RG of the Inf
             if last:
-                if self.get_rg("rg-%s" % vm.inf.id, credentials, subscription_id):
-                    deleted, msg = self.delete_resource_group("rg-%s" % vm.inf.id, resource_client)
+                if self.get_rg("rg-%s" % vm.inf.get_name(), credentials, subscription_id):
+                    deleted, msg = self.delete_resource_group("rg-%s" % vm.inf.get_name(), resource_client)
                     if not deleted:
                         return False, "Error terminating the VM: %s" % msg
                 else:
-                    self.log_info("RG: %s does not exist. Do not remove." % "rg-%s" % vm.inf.id)
+                    self.log_info("RG: %s does not exist. Do not remove." % "rg-%s" % vm.inf.get_name())
 
         except Exception as ex:
             self.log_exception("Error terminating the VM")

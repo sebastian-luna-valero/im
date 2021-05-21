@@ -443,7 +443,7 @@ class OpenNebulaCloudConnector(CloudConnector):
 
                 sg_name = network.getValue("sg_name")
                 if not sg_name:
-                    sg_name = "im-%s-%s" % (str(inf.id), network_name)
+                    sg_name = "im-%s-%s" % (str(inf.get_name()), network_name)
 
                 # Use the InfrastructureInfo lock to assure that only one VM create the SG
                 with inf._lock:
@@ -529,7 +529,7 @@ class OpenNebulaCloudConnector(CloudConnector):
         session_id = self.getSessionID(auth_data)
 
         for net in inf.radl.networks:
-            sg_name = "im-%s-%s" % (str(inf.id), net.id)
+            sg_name = "im-%s-%s" % (str(inf.get_name()), net.id)
 
             # wait it to terminate and then remove the SG
             cont = 0

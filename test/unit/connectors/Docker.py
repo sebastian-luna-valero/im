@@ -299,6 +299,7 @@ class TestDockerConnector(TestCloudConnectorBase):
 
         inf = MagicMock()
         inf.id = "infid"
+        inf.get_name.return_value = "infname"
         vm = VirtualMachine(inf, "1", docker_cloud.cloud, radl, radl, docker_cloud, 1)
 
         requests.side_effect = self.get_response

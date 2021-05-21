@@ -352,10 +352,10 @@ class GCECloudConnector(LibCloudCloudConnector):
                     public_net = net
 
             # Create FW rules to allow all inside the VMs
-            if inf.id in net_name:
+            if inf.get_name() in net_name:
                 firewall_name = "%s-all" % net_name
             else:
-                firewall_name = "im-%s-%s-all" % (inf.id, net_name)
+                firewall_name = "im-%s-%s-all" % (inf.get_name(), net_name)
             allowed = [{'IPProtocol': 'udp', 'ports': '1-65535'},
                        {'IPProtocol': 'tcp', 'ports': '1-65535'},
                        {'IPProtocol': 'icmp'}]
@@ -370,10 +370,10 @@ class GCECloudConnector(LibCloudCloudConnector):
 
             ports = {"tcp": ["22"]}
             if public_net:
-                if inf.id in net_name:
+                if inf.get_name() in net_name:
                     firewall_name = "%s" % net_name
                 else:
-                    firewall_name = "im-%s-%s" % (inf.id, net_name)
+                    firewall_name = "im-%s-%s" % (inf.get_name(), net_name)
 
                 outports = public_net.getOutPorts()
                 if outports:
@@ -410,7 +410,7 @@ class GCECloudConnector(LibCloudCloudConnector):
                 i += 1
                 network = radl.get_network_by_id(net_name)
                 if network.getValue('create') == 'yes' and not network.isPublic():
-                    gce_net_name = "im-%s-%s" % (inf.id, net_name)
+                    gce_net_name = "im-%s-%s" % (inf.get_name(), net_name)
 
                     # First check if the net already exists
                     net = None
@@ -501,7 +501,7 @@ class GCECloudConnector(LibCloudCloudConnector):
             else:
                 disk_size = radl.systems[0].getFeature("disk." + str(cont) + ".size").getValue('G')
                 disk['autoDelete'] = True
-                disk['initializeParams'] = {'diskName': "im-%s-%s" % (inf.id, str(cont)),
+                disk['initializeParams'] = {'diskName': "im-%s-%s" % (inf.get_name(), str(cont)),
                                             'diskSizeGb': str(disk_size),
                                             'diskType': driver.ex_get_disktype(disk_type,
                                                                                zone=location).extra['selfLink']}
@@ -651,7 +651,7 @@ class GCECloudConnector(LibCloudCloudConnector):
         Delete created GCE networks
         """
         for gce_net in driver.ex_list_networks():
-            net_prefix = "im-%s-" % inf.id
+            net_prefix = "im-%s-" % inf.get_name()
             if gce_net.name.startswith(net_prefix):
                 self.log_info("Deleting net %s." % gce_net.name)
 
@@ -675,7 +675,7 @@ class GCECloudConnector(LibCloudCloudConnector):
         Delete created GCE routes
         """
         for gce_route in driver.ex_list_routes():
-            name_prefix = "im-%s-" % inf.id
+            name_prefix = "im-%s-" % inf.get_name()
             if gce_route.name.startswith(name_prefix):
                 self.log_info("Deleting route %s." % gce_route.name)
                 gce_route.destroy()
@@ -717,7 +717,7 @@ class GCECloudConnector(LibCloudCloudConnector):
         Delete the FWs
         """
         for gce_fw in driver.ex_list_firewalls():
-            if vm.inf.id in gce_fw.name:
+            if vm.inf.get_name() in gce_fw.name:
                 self.log_info("Deleting FW %s." % gce_fw.name)
                 gce_fw.destroy()
 
@@ -801,7 +801,7 @@ class GCECloudConnector(LibCloudCloudConnector):
                         success = False
                         break
 
-                    route_name = "im-%s-%s" % (vm.inf.id, net_name)
+                    route_name = "im-%s-%s" % (vm.inf.get_name(), net_name)
                     self.log_info("Adding route %s to instance ID: %s." % (router_cidr, vrouter))
                     try:
                         driver.ex_create_route(route_name, router_cidr, priority=800, network=gce_net,

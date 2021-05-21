@@ -255,7 +255,7 @@ class FogBowCloudConnector(CloudConnector):
                 member = parts[1]
 
         for net in radl.networks:
-            net_name = "im_%s_%s" % (inf.id, net.id)
+            net_name = "im_%s_%s" % (inf.get_name(), net.id)
             if net.getValue("federated") == "yes":
                 if net_name in fbw_fed_nets:
                     self.log_info("Fed Net %s exists in FogBow do not create it again." % net_name)
@@ -745,7 +745,7 @@ class FogBowCloudConnector(CloudConnector):
         try:
             for net in vm.info.networks:
                 if not net.isPublic():
-                    net_name = "im_%s_%s" % (vm.inf.id, net.id)
+                    net_name = "im_%s_%s" % (vm.inf.get_name(), net.id)
                     resp = None
                     if net_name in fbw_nets:
                         net_id = fbw_nets[net_name]

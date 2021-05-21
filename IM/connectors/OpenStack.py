@@ -802,7 +802,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         msg = ""
         res = True
         for ost_net in driver.ex_list_networks():
-            net_prefix = "im-%s-" % inf.id
+            net_prefix = "im-%s-" % inf.get_name()
             if ost_net.name.startswith(net_prefix):
                 if 'subnets' in ost_net.extra and len(ost_net.extra['subnets']) == 1:
                     subnet_id = ost_net.extra['subnets'][0]
@@ -841,7 +841,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                 if network.getValue('create') == 'yes' and not network.isPublic():
                     ost_net_name = network.getValue('provider_id')
                     if not ost_net_name:
-                        ost_net_name = "im-%s-%s" % (inf.id, net_name)
+                        ost_net_name = "im-%s-%s" % (inf.get_name(), net_name)
 
                     # First check if the net already exists
                     if self.get_ost_net(driver, name=ost_net_name):
@@ -876,7 +876,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                                                                                        get_ex_error(ex)))
 
                     # now create the subnet
-                    ost_subnet_name = "im-%s-sub%s" % (inf.id, net_name)
+                    ost_subnet_name = "im-%s-sub%s" % (inf.get_name(), net_name)
                     try:
                         self.log_info("Creating ost subnet: %s" % ost_subnet_name)
                         ost_subnet = driver.ex_create_subnet(ost_subnet_name, ost_net, net_cidr,
@@ -1355,7 +1355,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         # First create a SG for the entire Infra
         # Use the InfrastructureInfo lock to assure that only one VM create the SG
         with inf._lock:
-            sg_name = "im-%s" % inf.id
+            sg_name = "im-%s" % inf.get_name()
             sg = self._get_security_group(driver, sg_name)
             if not sg:
                 self.log_info("Creating security group: %s" % sg_name)
@@ -1372,7 +1372,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
             network = radl.get_network_by_id(network_name)
             sg_name = network.getValue("sg_name")
             if not sg_name:
-                sg_name = "im-%s-%s" % (str(inf.id), network_name)
+                sg_name = "im-%s-%s" % (str(inf.get_name()), network_name)
 
             # Use the InfrastructureInfo lock to assure that only one VM create the SG
             with inf._lock:
@@ -1501,11 +1501,11 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
         """
         Get the list of SGs for this infra
         """
-        sg_names = ["im-%s" % inf.id]
+        sg_names = ["im-%s" % inf.get_name()]
         for net in inf.radl.networks:
             sg_name = net.getValue("sg_name")
             if not sg_name:
-                sg_name = "im-%s-%s" % (inf.id, net.id)
+                sg_name = "im-%s-%s" % (inf.get_name(), net.id)
             sg_names.append(sg_name)
 
         return sg_names

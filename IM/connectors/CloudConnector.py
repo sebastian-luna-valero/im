@@ -588,8 +588,7 @@ class CloudConnector(LoggerMixin):
 
         return None
 
-    @staticmethod
-    def gen_instance_name(system, unique=True, default="im-userimage"):
+    def gen_instance_name(self, system, unique=True, default="im-userimage"):
         name = system.getValue("instance_name")
         if not name:
             name = system.getValue("disk.0.image.name")
@@ -599,7 +598,7 @@ class CloudConnector(LoggerMixin):
             name = default
         name = name.lower().replace("_", "-")
         if unique:
-            return "%s-%s" % (name, str(uuid.uuid1()))
+            return "%s-%s" % (name, self.inf.get_name())
         else:
             return name
 

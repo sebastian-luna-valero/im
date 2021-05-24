@@ -1353,6 +1353,9 @@ configure step2 (
         inf.id = "1"
         inf.auth = user_auth
         inf.name = "infname"
+        vm = VirtualMachine(inf, "1234", None, None, None)
+        vm.im_id = "vmid"
+        inf.vm_list = [vm]
         InfrastructureList.infrastructure_list[inf.id] = inf
         InfrastructureList.infrastructure_auth[inf.id] = inf
         get_inf_ids_from_db.return_value = ["1"]
@@ -1360,6 +1363,8 @@ configure step2 (
         self.assertEquals(inf_id, inf.id)
         sel_inf = IM.get_infrastructure("infname", user_auth)
         self.assertEquals(sel_inf.id, inf.id)
+        vms = IM.GetInfrastructureInfo("infname", user_auth)
+        self.assertEquals(vms, [vm.im_id for vm in inf.vm_list])
 
 
 if __name__ == "__main__":

@@ -40,7 +40,10 @@ class InfrastructureList():
     """Threading Lock to avoid concurrency problems."""
 
     infrastructure_auth = {}
-    """Map from string to :py:class:`Authentication`."""
+    """Map from string to :py:class:`InfrastructureInfo`."""
+
+    infrastructure_names = {}
+    """Map from string to :py:class:`InfrastructureInfo`."""
 
     @staticmethod
     def add_infrastructure(inf):
@@ -78,6 +81,8 @@ class InfrastructureList():
                         inf = res[inf_id]
                         # store in memory to improve later requests
                         InfrastructureList.infrastructure_auth[inf_id] = inf
+                        if inf.name:
+                            InfrastructureList.infrastructure_names[inf.name] = inf
                         if inf and inf.is_authorized(auth):
                             inf_ids.append(inf.id)
             return inf_ids
@@ -282,8 +287,9 @@ class InfrastructureList():
 
     @staticmethod
     def get_inf_id_from_name(inf_name, auth):
-        # In this case only loads the auth data to improve performance
-        inf_ids = []
+        if inf_name in InfrastructureList.infrastructure_names:
+            return InfrastructureList.infrastructure_names[inf_name].id
+
         for inf_id in InfrastructureList._get_inf_ids_from_db():
             inf = None
             # I we have the data in memory, use it
@@ -295,6 +301,8 @@ class InfrastructureList():
                     inf = res[inf_id]
                     # store in memory to improve later requests
                     InfrastructureList.infrastructure_auth[inf_id] = inf
+                    if inf.name:
+                        InfrastructureList.infrastructure_names[inf.name] = inf
             if inf and inf.name == inf_name:
                 return inf.id
         return None

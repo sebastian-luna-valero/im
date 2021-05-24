@@ -731,9 +731,9 @@ class TestIM(unittest.TestCase):
         auth0 = self.getAuth([0], [], [("Dummy", 0)])
 
         inf = MagicMock()
-        get_inf_ids.return_value = ["1"]
-        InfrastructureList.infrastructure_list = {"1": inf}
-        inf.id = "1"
+        get_inf_ids.return_value = ["15f8b412-b3bc-11eb-973a-00155deab3fa"]
+        InfrastructureList.infrastructure_list = {"15f8b412-b3bc-11eb-973a-00155deab3fa": inf}
+        inf.id = "15f8b412-b3bc-11eb-973a-00155deab3fa"
         inf.auth = auth0
         inf.deleted = False
         inf.deleting = False
@@ -749,47 +749,47 @@ class TestIM(unittest.TestCase):
         vm3.state = VirtualMachine.RUNNING
         inf.get_vm_list.return_value = [vm1, vm2, vm3]
 
-        state = IM.GetInfrastructureState("1", auth0)
+        state = IM.GetInfrastructureState(inf.id, auth0)
         self.assertEqual(state["state"], "running")
 
         vm1.state = VirtualMachine.FAILED
         vm2.state = VirtualMachine.RUNNING
         vm3.state = VirtualMachine.UNKNOWN
 
-        state = IM.GetInfrastructureState("1", auth0)
+        state = IM.GetInfrastructureState(inf.id, auth0)
         self.assertEqual(state["state"], "failed")
 
         vm1.state = VirtualMachine.PENDING
         vm2.state = VirtualMachine.RUNNING
         vm3.state = VirtualMachine.CONFIGURED
 
-        state = IM.GetInfrastructureState("1", auth0)
+        state = IM.GetInfrastructureState(inf.id, auth0)
         self.assertEqual(state["state"], "pending")
 
         vm1.state = VirtualMachine.PENDING
         vm2.state = VirtualMachine.CONFIGURED
         vm3.state = VirtualMachine.UNCONFIGURED
 
-        state = IM.GetInfrastructureState("1", auth0)
+        state = IM.GetInfrastructureState(inf.id, auth0)
         self.assertEqual(state["state"], "pending")
 
         vm1.state = VirtualMachine.RUNNING
         vm2.state = VirtualMachine.CONFIGURED
         vm3.state = VirtualMachine.UNCONFIGURED
 
-        state = IM.GetInfrastructureState("1", auth0)
+        state = IM.GetInfrastructureState(inf.id, auth0)
         self.assertEqual(state["state"], "running")
 
         vm1.state = VirtualMachine.RUNNING
         vm2.state = VirtualMachine.CONFIGURED
         vm3.state = VirtualMachine.STOPPED
 
-        state = IM.GetInfrastructureState("1", auth0)
+        state = IM.GetInfrastructureState(inf.id, auth0)
         self.assertEqual(state["state"], "running")
 
         inf.get_vm_list.return_value = []
         inf.configured = None
-        state = IM.GetInfrastructureState("1", auth0)
+        state = IM.GetInfrastructureState(inf.id, auth0)
         self.assertEqual(state["state"], "pending")
 
     def test_altervm(self):

@@ -223,6 +223,13 @@ class InfrastructureManager:
     def get_infrastructure(inf_id, auth):
         """Return infrastructure info with some id if valid authorization provided."""
 
+        is_id = None
+        if inf_id:
+            is_id = re.match('^[a-f0-9]{8}-[a-f0-9]{4}-1[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$', inf_id)
+
+        if is_id is None:
+            inf_id = IM.InfrastructureList.InfrastructureList.get_inf_id_from_name(inf_id, auth)
+
         if inf_id not in IM.InfrastructureList.InfrastructureList.get_inf_ids():
             InfrastructureManager.logger.error("Error, incorrect Inf ID: %s" % inf_id)
             raise IncorrectInfrastructureException()

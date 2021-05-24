@@ -279,3 +279,22 @@ class InfrastructureList():
             else:
                 db.execute("delete from inf_list")
             db.close()
+
+    @staticmethod
+    def get_inf_id_from_name(inf_name, auth):
+        # In this case only loads the auth data to improve performance
+        inf_ids = []
+        for inf_id in InfrastructureList._get_inf_ids_from_db():
+            inf = None
+            # I we have the data in memory, use it
+            if inf_id in InfrastructureList.infrastructure_auth:
+                inf = InfrastructureList.infrastructure_auth[inf_id]
+            else:
+                res = InfrastructureList._get_data_from_db(Config.DATA_DB, inf_id, auth)
+                if res:
+                    inf = res[inf_id]
+                    # store in memory to improve later requests
+                    InfrastructureList.infrastructure_auth[inf_id] = inf
+            if inf and inf.name == inf_name:
+                return inf.id
+        return None

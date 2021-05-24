@@ -1343,6 +1343,24 @@ configure step2 (
         with self.assertRaises(Exception):
             IM.GetCloudQuotas("cloud2", auth)
 
+    @patch('IM.InfrastructureList.InfrastructureList._get_inf_ids_from_db')
+    def test_get_inf_by_name(self, get_inf_ids_from_db):
+        """Check _get_inf_by_name"""
+        user_auth = Authentication([{'id': 'im', 'type': 'InfrastructureManager',
+                                     'username': 'username',
+                                     'password': 'password'}])
+        inf = InfrastructureInfo()
+        inf.id = "1"
+        inf.auth = user_auth
+        inf.name = "infname"
+        InfrastructureList.infrastructure_list[inf.id] = inf
+        InfrastructureList.infrastructure_auth[inf.id] = inf
+        get_inf_ids_from_db.return_value = ["1"]
+        inf_id = InfrastructureList.get_inf_id_from_name("infname", user_auth)
+        self.assertEquals(inf_id, inf.id)
+        sel_inf = IM.get_infrastructure("infname", user_auth)
+        self.assertEquals(sel_inf.id, inf.id)
+
 
 if __name__ == "__main__":
     unittest.main()

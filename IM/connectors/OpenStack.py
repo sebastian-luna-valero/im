@@ -1714,7 +1714,7 @@ class OpenStackCloudConnector(LibCloudCloudConnector):
                     disk_device = system.getValue("disk." + str(cont) + ".device")
                     self.log_info("Creating a %d GB volume for the disk %d" % (int(disk_size), cont))
 
-                    volume_name = "im-%s" % str(vm.inf.get_name())
+                    volume_name = "im-%s-disk-%d" % (vm.inf.get_name(), cont)
 
                     location = self.get_node_location(node)
                     success, volume, msg = self.create_attach_volume(node, disk_size, disk_device,

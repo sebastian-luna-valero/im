@@ -535,12 +535,13 @@ def RESTCreateInfrastructure():
 
         inf_id = InfrastructureManager.CreateInfrastructure(radl_data, auth, async_call)
 
+        sel_inf = InfrastructureManager.get_infrastructure(inf_id, auth)
         # Store the TOSCA document
         if tosca_data:
-            sel_inf = InfrastructureManager.get_infrastructure(inf_id, auth)
             sel_inf.extra_info['TOSCA'] = tosca_data
 
         bottle.response.headers['InfID'] = inf_id
+        bottle.response.headers['InfName'] = sel_inf.name
         bottle.response.content_type = "text/uri-list"
         res = get_full_url('/infrastructures/%s' % inf_id)
 

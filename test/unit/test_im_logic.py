@@ -35,7 +35,7 @@ Config.MAX_SIMULTANEOUS_LAUNCHES = 2
 
 from IM.VirtualMachine import VirtualMachine
 from IM.InfrastructureManager import InfrastructureManager as IM
-from IM.InfrastructureManager import DisabledFunctionException
+from IM.InfrastructureManager import DisabledFunctionException, UnauthorizedUserException
 from IM.InfrastructureList import InfrastructureList
 from IM.auth import Authentication
 from radl.radl import RADL, system, deploy, Feature, SoftFeatures
@@ -1358,13 +1358,17 @@ configure step2 (
         inf.vm_list = [vm]
         InfrastructureList.infrastructure_list[inf.id] = inf
         InfrastructureList.infrastructure_auth[inf.id] = inf
-        get_inf_ids_from_db.return_value = ["1"]
-        inf_id = InfrastructureList.get_inf_id_from_name("infname", user_auth)
+        get_inf_ids_from_db.return_value = [inf.id]
+        inf_id = InfrastructureList.get_inf_id_from_name(inf.name)
         self.assertEquals(inf_id, inf.id)
-        sel_inf = IM.get_infrastructure("infname", user_auth)
-        self.assertEquals(sel_inf.id, inf.id)
-        vms = IM.GetInfrastructureInfo("infname", user_auth)
-        self.assertEquals(vms, [vm.im_id for vm in inf.vm_list])
+        inf_id = IM.GetInfrastructureID(inf.name, user_auth)
+        self.assertEquals(inf_id, inf.id)
+
+        user_auth2 = Authentication([{'id': 'im', 'type': 'InfrastructureManager',
+                                      'username': 'username2',
+                                      'password': 'password2'}])
+        with self.assertRaises(UnauthorizedUserException) as ex:
+            IM.GetInfrastructureID(inf.name, user_auth2)
 
 
 if __name__ == "__main__":

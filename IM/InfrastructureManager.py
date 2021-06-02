@@ -223,13 +223,6 @@ class InfrastructureManager:
     def get_infrastructure(inf_id, auth):
         """Return infrastructure info with some id if valid authorization provided."""
 
-        is_id = None
-        if inf_id:
-            is_id = re.match('^[a-f0-9]{8}-[a-f0-9]{4}-1[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$', inf_id)
-
-        if is_id is None:
-            inf_id = IM.InfrastructureList.InfrastructureList.get_inf_id_from_name(inf_id, auth)
-
         if inf_id not in IM.InfrastructureList.InfrastructureList.get_inf_ids():
             InfrastructureManager.logger.error("Error, incorrect Inf ID: %s" % inf_id)
             raise IncorrectInfrastructureException()
@@ -1673,3 +1666,26 @@ class InfrastructureManager:
         # First check the auth data
         auth = InfrastructureManager.check_auth_data(auth)
         return InfrastructureManager._get_cloud_conn(cloud_id, auth).get_quotas(auth)
+
+    @staticmethod
+    def GetInfrastructureID(inf_name, auth):
+        """
+        Get the ID of an infrastructure by name.
+
+        Args:
+
+        - inf_name(str): infrastructure name.
+        - auth(Authentication): parsed authentication tokens.
+
+        Return: str with the infrastructure ID
+        """
+        auth = InfrastructureManager.check_auth_data(auth)
+
+        InfrastructureManager.logger.info("Getting Inf ID of Inf name: " + str(inf_name))
+
+        inf_id = IM.InfrastructureList.InfrastructureList.get_inf_id_from_name(inf_name)
+        # Look for it to check the authorization
+        InfrastructureManager.get_infrastructure(inf_id, auth)
+
+        InfrastructureManager.logger.debug("Inf ID: " + inf_id)
+        return inf_id

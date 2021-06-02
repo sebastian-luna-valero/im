@@ -286,7 +286,7 @@ class InfrastructureList():
             db.close()
 
     @staticmethod
-    def get_inf_id_from_name(inf_name, auth):
+    def get_inf_id_from_name(inf_name):
         if inf_name in InfrastructureList.infrastructure_names:
             return InfrastructureList.infrastructure_names[inf_name].id
 
@@ -296,7 +296,7 @@ class InfrastructureList():
             if inf_id in InfrastructureList.infrastructure_auth:
                 inf = InfrastructureList.infrastructure_auth[inf_id]
             else:
-                res = InfrastructureList._get_data_from_db(Config.DATA_DB, inf_id, auth)
+                res = InfrastructureList._get_data_from_db(Config.DATA_DB, inf_id, True)
                 if res:
                     inf = res[inf_id]
                     # store in memory to improve later requests

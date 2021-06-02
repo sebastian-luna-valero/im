@@ -57,6 +57,7 @@ from IM.REST import (RESTDestroyInfrastructure,
                      RESTCreateDiskSnapshot,
                      RESTImportInfrastructure,
                      RESTGetCloudInfo,
+                     RESTGetInfrastructureID,
                      return_error,
                      format_output)
 
@@ -313,7 +314,7 @@ class TestREST(unittest.TestCase):
         bottle_request.body = read_file_as_bytes("../files/tosca_create.yml")
         CreateInfrastructure.side_effect = InvaliddUserException()
         res = RESTCreateInfrastructure()
-        self.assertEqual(res, "Error Getting Inf. info: Invalid InfrastructureManager credentials")
+        self.assertEqual(res, "Error Creating Inf.: Invalid InfrastructureManager credentials")
 
         bottle_request.body = read_file_as_bytes("../files/tosca_create.yml")
         CreateInfrastructure.side_effect = UnauthorizedUserException()
@@ -1055,6 +1056,18 @@ class TestREST(unittest.TestCase):
         res = RESTGetCloudInfo("cloud1", "images")
         self.assertEqual(json.loads(res), {"images": []})
         self.assertEqual(GetCloudImageList.call_args_list[0][0][2], {'region': 'region_name'})
+
+    @patch("IM.InfrastructureManager.InfrastructureManager.GetInfrastructureID")
+    @patch("bottle.request")
+    def test_GetInfrastructureID(self, bottle_request, GetInfrastructureID):
+        """Test REST GetInfrastructureID."""
+        bottle_request.return_value = MagicMock()
+        bottle_request.headers = {"AUTHORIZATION": "type = InfrastructureManager; username = user; password = pass",
+                                  "Accept": "application/json"}
+
+        GetInfrastructureID.return_value = "1"
+        res = RESTGetInfrastructureID()
+        self.assertEqual(res, "1")
 
 
 if __name__ == "__main__":

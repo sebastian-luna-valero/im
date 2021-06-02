@@ -67,6 +67,9 @@ Next tables summaries the resources and the HTTP methods available.
 |             | | in the ``cloudId`` provider.        | | in the ``cloudId`` provider.              |
 +-------------+---------------------------------------+---------------------------------------------+
 
+If infrastructure name is set as ``infId`` in any of the REST calls, a 308 respose will be returned with the
+URL using the corresponding infrastructure ID.
+
 The error message returned by the service will depend on the ``Accept`` header of the request:
 
 * text/plain: (default option).
@@ -138,9 +141,11 @@ PUT ``http://imserver.com/infrastructures``
 GET ``http://imserver.com/infrastructures/<infId>``
    :Response Content-type: text/uri-list or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Return a list of URIs referencing the virtual machines associated to the infrastructure with ID ``infId``.
+   If infrastructure name is set as ``infId`` a 308 respose will be returned with the URL using the corresponding ID.
    The result is JSON format has the following format::
 
     {
@@ -153,6 +158,7 @@ GET ``http://imserver.com/infrastructures/<infId>``
 GET ``http://imserver.com/infrastructures/<infId>/<property_name>``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :input fields: ``headeronly`` (optional)
    :fail response: 401, 404, 400, 403
 
@@ -183,6 +189,7 @@ POST ``http://imserver.com/infrastructures/<infId>``
    :input fields: ``context`` (optional)
    :Response Content-type: text/uri-list
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400, 415
 
    Add the resources specified in the body contents (in TOSCA, RADL plain or in JSON formats)
@@ -215,6 +222,7 @@ POST ``http://imserver.com/infrastructures/<infId>``
 PUT ``http://imserver.com/infrastructures/<infId>/stop``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Perform the ``stop`` action in all the virtual machines in the
@@ -224,6 +232,7 @@ PUT ``http://imserver.com/infrastructures/<infId>/stop``
 PUT ``http://imserver.com/infrastructures/<infId>/start``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Perform the ``start`` action in all the virtual machines in the
@@ -236,6 +245,7 @@ PUT ``http://imserver.com/infrastructures/<infId>/reconfigure``
    :input fields: ``vm_list`` (optional)
    :Response Content-type: text/plain
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400, 415
 
    Perform the ``reconfigure`` action in all the virtual machines in the
@@ -251,6 +261,7 @@ DELETE ``http://imserver.com/infrastructures/<infId>``
    :input fields: ``force`` (optional), ``async`` (optional)
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Undeploy the virtual machines associated to the infrastructure with ID
@@ -263,6 +274,7 @@ DELETE ``http://imserver.com/infrastructures/<infId>``
 GET ``http://imserver.com/infrastructures/<infId>/vms/<vmId>``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Return information about the virtual machine with ID ``vmId`` associated to
@@ -280,6 +292,7 @@ PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>``
    :body Content-type: text/plain or application/json
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400, 415
 
    Change the features of the virtual machine with ID ``vmId`` in the
@@ -296,6 +309,7 @@ PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>``
 GET ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/<property_name>``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Return property ``property_name`` from to the virtual machine with ID 
@@ -311,6 +325,7 @@ DELETE ``http://imserver.com/infrastructures/<infId>/vms/<vmId>``
    :input fields: ``context`` (optional)
    :Response Content-type: text/plain
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Undeploy the virtual machine with ID ``vmId`` associated to the
@@ -323,6 +338,7 @@ DELETE ``http://imserver.com/infrastructures/<infId>/vms/<vmId>``
 PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/start``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Perform the ``start`` action in the virtual machine with ID 
@@ -332,6 +348,7 @@ PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/start``
 PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/stop``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Perform the ``stop`` action in the virtual machine with ID 
@@ -341,6 +358,7 @@ PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/stop``
 PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/reboot``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 401, 403, 404, 400
 
    Perform the ``reboot`` action in the virtual machine with ID
@@ -350,6 +368,7 @@ PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/reboot``
 GET ``http://imserver.com/version``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :fail response: 400
 
    Return the version of the IM service. The result is JSON format has the following format::
@@ -361,6 +380,7 @@ GET ``http://imserver.com/version``
 PUT ``http://imserver.com/infrastructures/<infId>/vms/<vmId>/disks/<diskNum>/snapshot``
    :Response Content-type: text/plain or application/json
    :ok response: 200 OK
+   :redirect response: 308
    :input fields: ``image_name`` (mandatory), ``auto_delete`` (optional)
    :fail response: 401, 403, 404, 400
 

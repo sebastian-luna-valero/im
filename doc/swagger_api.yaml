@@ -258,6 +258,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
     post:
       tags:
         - infrastructures
@@ -371,6 +379,14 @@ paths:
           description: Not Found
         '415':
           description: Unsupported Media type
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
     delete:
       tags:
         - infrastructures
@@ -429,7 +445,15 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
-
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
+  
   /infrastructures/{InfId}/state:
     get:
       tags:
@@ -461,6 +485,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/outputs:
     get:
@@ -500,6 +532,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/contmsg:
     get:
@@ -567,6 +607,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/data:
     get:
@@ -627,6 +675,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/radl:
     get:
@@ -673,6 +729,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/tosca:
     get:
@@ -711,6 +775,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/stop:
     put:
@@ -741,6 +813,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/start:
     put:
@@ -771,6 +851,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/reconfigure:
     put:
@@ -838,6 +926,14 @@ paths:
           description: Not Found
         '415':
           description: Unsupported Media type
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/vms/{VMId}:
     get:
@@ -899,6 +995,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
     put:
       tags:
         - infrastructures
@@ -978,6 +1082,14 @@ paths:
           description: Not Found
         '415':
           description: Unsupported Media type
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
     delete:
       tags:
         - infrastructures
@@ -1012,6 +1124,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/vms/{VMId}/contmsg:
     get:
@@ -1062,6 +1182,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/vms/{VMId}/{Property}:
     get:
@@ -1116,6 +1244,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/vms/{VMId}/stop:
     put:
@@ -1153,6 +1289,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/vms/{VMId}/start:
     put:
@@ -1189,6 +1333,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/vms/{VMId}/reboot:
     put:
@@ -1225,6 +1377,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /infrastructures/{InfId}/vms/{VMId}/disks/{diskNum}/snapshot:
     put:
@@ -1295,6 +1455,14 @@ paths:
           description: Forbidden
         '404':
           description: Not Found
+        '308':
+          description: If Infrastructure Name is set as InfId
+          headers:
+            Location:
+              description: Same URI but using the corresponding infrastructure ID.
+              schema:
+                type: string
+                format: uri
 
   /clouds/{CloudId}/images:
     get:

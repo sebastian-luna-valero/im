@@ -15,10 +15,15 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import logging
+import re
 import threading
 import json
 import base64
 import bottle
+try:
+    from urllib.parse import urljoin
+except Exception:
+    from urlparse import urljoin
 
 from IM.InfrastructureInfo import IncorrectVMException, DeletedVMException, IncorrectStateException
 from IM.InfrastructureManager import (InfrastructureManager, DeletedInfrastructureException,
@@ -305,6 +310,24 @@ def format_output(res, default_type="text/plain", field_name=None, list_field_na
     return info
 
 
+def inf_name_redirect(inf_id, auth):
+    """
+    Checks if the ID received is a name and if it exists redirects to the ID assinged to the inf
+    with name "inf_id"
+    """
+    is_id = None
+    if inf_id:
+        is_id = re.match('^[a-f0-9]{8}-[a-f0-9]{4}-1[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$', inf_id)
+    if not is_id:
+        new_inf_id = InfrastructureManager.GetInfrastructureID(inf_id, auth)
+        new_path = bottle.request.path.replace(inf_id, new_inf_id) + "?"+ bottle.request.query_string
+        bottle.response.status = 308
+        bottle.response.content_type = 'text/plain'
+        bottle.response.set_header('Location', urljoin(bottle.request.url, new_path))
+        return True
+    return False
+
+
 @app.hook('after_request')
 def enable_cors():
     """
@@ -324,6 +347,8 @@ def RESTDestroyInfrastructure(infid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         force = False
         if "force" in bottle.request.params.keys():
             str_force = bottle.request.params.get("force").lower()
@@ -370,6 +395,8 @@ def RESTGetInfrastructureInfo(infid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         vm_ids = InfrastructureManager.GetInfrastructureInfo(infid, auth)
         res = []
 
@@ -396,6 +423,8 @@ def RESTGetInfrastructureProperty(infid=None, prop=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         if prop == "contmsg":
             headeronly = False
             if "headeronly" in bottle.request.params.keys():
@@ -541,7 +570,6 @@ def RESTCreateInfrastructure():
             sel_inf.extra_info['TOSCA'] = tosca_data
 
         bottle.response.headers['InfID'] = inf_id
-        bottle.response.headers['InfName'] = sel_inf.name
         bottle.response.content_type = "text/uri-list"
         res = get_full_url('/infrastructures/%s' % inf_id)
 
@@ -593,6 +621,8 @@ def RESTGetVMInfo(infid=None, vmid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         radl = InfrastructureManager.GetVMInfo(infid, vmid, auth)
         return format_output(radl, field_name="radl")
     except DeletedInfrastructureException as ex:
@@ -618,6 +648,8 @@ def RESTGetVMProperty(infid=None, vmid=None, prop=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         if prop == 'contmsg':
             info = InfrastructureManager.GetVMContMsg(infid, vmid, auth)
         elif prop == 'command':
@@ -722,6 +754,8 @@ def RESTAddResource(infid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         context = True
         if "context" in bottle.request.params.keys():
             str_ctxt = bottle.request.params.get("context").lower()
@@ -789,6 +823,8 @@ def RESTRemoveResource(infid=None, vmid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         context = True
         if "context" in bottle.request.params.keys():
             str_ctxt = bottle.request.params.get("context").lower()
@@ -827,6 +863,8 @@ def RESTAlterVM(infid=None, vmid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         content_type = get_media_type('Content-Type')
         radl_data = bottle.request.body.read().decode("utf-8")
 
@@ -869,6 +907,8 @@ def RESTReconfigureInfrastructure(infid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         vm_list = None
         if "vm_list" in bottle.request.params.keys():
             str_vm_list = bottle.request.params.get("vm_list")
@@ -913,6 +953,8 @@ def RESTStartInfrastructure(infid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         bottle.response.content_type = "text/plain"
         return InfrastructureManager.StartInfrastructure(infid, auth)
     except DeletedInfrastructureException as ex:
@@ -936,6 +978,8 @@ def RESTStopInfrastructure(infid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         bottle.response.content_type = "text/plain"
         return InfrastructureManager.StopInfrastructure(infid, auth)
     except DeletedInfrastructureException as ex:
@@ -959,6 +1003,8 @@ def RESTStartVM(infid=None, vmid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         bottle.response.content_type = "text/plain"
         return InfrastructureManager.StartVM(infid, vmid, auth)
     except DeletedInfrastructureException as ex:
@@ -986,6 +1032,8 @@ def RESTStopVM(infid=None, vmid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         bottle.response.content_type = "text/plain"
         return InfrastructureManager.StopVM(infid, vmid, auth)
     except DeletedInfrastructureException as ex:
@@ -1013,6 +1061,8 @@ def RESTRebootVM(infid=None, vmid=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         bottle.response.content_type = "text/plain"
         return InfrastructureManager.RebootVM(infid, vmid, auth)
     except DeletedInfrastructureException as ex:
@@ -1054,6 +1104,8 @@ def RESTCreateDiskSnapshot(infid=None, vmid=None, disknum=None):
         return return_error(401, "No authentication data provided")
 
     try:
+        if inf_name_redirect(infid, auth):
+            return ""
         bottle.response.content_type = "text/plain"
 
         if "image_name" in bottle.request.params.keys():
@@ -1127,29 +1179,6 @@ def RESTGetCloudInfo(cloudid=None, param=None):
     except Exception as ex:
         logger.exception("Error getting cloud info")
         return return_error(400, "Error getting cloud info: %s" % get_ex_error(ex))
-
-
-@app.route('/infrastructures/:infname/stop', method='GET')
-def RESTGetInfrastructureID(infname=None):
-    try:
-        auth = get_auth_header()
-    except Exception:
-        return return_error(401, "No authentication data provided")
-
-    try:
-        bottle.response.content_type = "text/plain"
-        return InfrastructureManager.GetInfrastructureID(infname, auth)
-    except DeletedInfrastructureException as ex:
-        return return_error(404, "Error gettng Inf ID: %s" % get_ex_error(ex))
-    except IncorrectInfrastructureException as ex:
-        return return_error(404, "Error gettng Inf ID: %s" % get_ex_error(ex))
-    except UnauthorizedUserException as ex:
-        return return_error(403, "Error gettng Inf ID: %s" % get_ex_error(ex))
-    except DisabledFunctionException as ex:
-        return return_error(403, "Error gettng Inf ID: %s" % get_ex_error(ex))
-    except Exception as ex:
-        logger.exception("Error gettng Inf ID")
-        return return_error(400, "Error gettng Inf ID: %s" % get_ex_error(ex))
 
 
 @app.error(403)

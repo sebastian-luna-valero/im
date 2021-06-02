@@ -65,13 +65,21 @@ This is the list of method names:
    :parameter 0: ``radl``: string
    :parameter 1: ``auth``: array of structs
    :parameter 2: ``async``: (optional, default value False) boolean
-   :ok response: [true, ``infId``: integer]
+   :ok response: [true, ``infId``: string]
    :fail response: [false, ``error``: string]
 
    Create and configure an infrastructure with the requirements specified in
    the RADL document passed as string. Return the ID associated to the created
    infrastructure. If ``async`` is set to ``True`` the call will not wait the VMs
    to be created.
+
+``GetInfrastructureID``
+   :parameter 0: ``infName``: string
+   :parameter 1: ``auth``: array of structs
+   :ok response: true, ``infId``: string]
+   :fail response: [false, ``error``: string]
+
+   Return the ID associated to the infrastructure with name ``infName``.
 
 ``GetInfrastructureInfo``
    :parameter 0: ``infId``: integer

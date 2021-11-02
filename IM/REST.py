@@ -201,23 +201,31 @@ def get_auth_header():
         REST_URL = get_full_url("")
 
     auth_header = bottle.request.headers['AUTHORIZATION']
-    if Config.SINGLE_SITE:
-        if auth_header.startswith("Basic "):
-            auth_data = str(base64.b64decode(auth_header[6:]))
-            user_pass = auth_data.split(":")
-            im_auth = {"type": "InfrastructureManager",
-                       "username": user_pass[0],
-                       "password": user_pass[1]}
+    auth = []
+    user_pass = None
+    token = None
+    if auth_header.startswith("Basic "):
+        auth_data = str(base64.b64decode(auth_header[6:]))
+        user_pass = auth_data.split(":")
+        auth.append({"type": "InfrastructureManager",
+                     "username": user_pass[0],
+                     "password": user_pass[1]})
+    elif auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        auth.append({"type": "InfrastructureManager",
+                     "username": "user",
+                     "token": token})
+
+    if Config.VAULT_URL:
+        vault = Vault(Config.VAULT_URL)
+        auth.extend(vault.get_auth_data(user_pass, token))
+    elif Config.SINGLE_SITE:
+        if user_pass:
             single_site_auth = {"type": Config.SINGLE_SITE_TYPE,
                                 "host": Config.SINGLE_SITE_AUTH_HOST,
                                 "username": user_pass[0],
                                 "password": user_pass[1]}
-            return Authentication([im_auth, single_site_auth])
-        elif auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-            im_auth = {"type": "InfrastructureManager",
-                       "username": "user",
-                       "token": token}
+        elif token:
             if Config.SINGLE_SITE_TYPE == "OpenStack":
                 single_site_auth = {"type": Config.SINGLE_SITE_TYPE,
                                     "host": Config.SINGLE_SITE_AUTH_HOST,
@@ -228,7 +236,9 @@ def get_auth_header():
                 single_site_auth = {"type": Config.SINGLE_SITE_TYPE,
                                     "host": Config.SINGLE_SITE_AUTH_HOST,
                                     "token": token}
-            return Authentication([im_auth, single_site_auth])
+        auth.append(single_site_auth)
+        return Authentication(auth)
+
     auth_data = auth_header.replace(AUTH_NEW_LINE_SEPARATOR, "\n")
     auth_data = auth_data.split(AUTH_LINE_SEPARATOR)
     return Authentication(Authentication.read_auth_data(auth_data))
